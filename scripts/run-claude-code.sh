@@ -8,11 +8,16 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 init_context "${1:-$PWD}"
 
+# Display configuration
 printf '=== Launching Claude Code in Sandbox ===\n\n'
 printf 'Model: %s\n' "${MODEL}"
 printf 'Ollama: http://host.docker.internal:%s\n' "${OLLAMA_PORT}"
 printf 'Workspace: %s\n' "${WORKSPACE}"
-printf 'Sandbox: %s\n\n' "${SANDBOX_NAME}"
+printf 'Sandbox: %s\n' "${SANDBOX_NAME}"
+if [ -n "${CLAUDE_CODE_FLAGS:-}" ]; then
+  printf 'Flags: %s\n' "${CLAUDE_CODE_FLAGS}"
+fi
+printf '\n'
 
 # Check prerequisites
 require_cmd docker
@@ -45,5 +50,6 @@ exec docker sandbox exec \
   -e "ANTHROPIC_API_KEY=" \
   -e "ANTHROPIC_BASE_URL=http://host.docker.internal:${OLLAMA_PORT}" \
   -e "CLAUDE_CODE_MODEL=${MODEL}" \
+  -e "CLAUDE_CODE_FLAGS=${CLAUDE_CODE_FLAGS:-}" \
   "${SANDBOX_NAME}" \
   /usr/local/bin/start-claude-code.sh

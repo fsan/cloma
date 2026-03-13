@@ -7,6 +7,7 @@ set -euo pipefail
 # Configuration with defaults (can be overridden via environment)
 ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://host.docker.internal:11434}"
 CLAUDE_CODE_MODEL="${CLAUDE_CODE_MODEL:-glm-5:cloud}"
+CLAUDE_CODE_FLAGS="${CLAUDE_CODE_FLAGS:-}"
 WORKSPACE="${WORKSPACE:-$PWD}"
 
 # Colors for output
@@ -73,6 +74,9 @@ print_info() {
   printf '  Model:    %s\n' "${CLAUDE_CODE_MODEL}"
   printf '  Ollama:   %s\n' "${ANTHROPIC_BASE_URL}"
   printf '  Workspace: %s\n' "${WORKSPACE}"
+  if [ -n "${CLAUDE_CODE_FLAGS}" ]; then
+    printf '  Flags:    %s\n' "${CLAUDE_CODE_FLAGS}"
+  fi
   printf '\n'
   printf 'Environment:\n'
   printf '  ANTHROPIC_AUTH_TOKEN: %s\n' "${ANTHROPIC_AUTH_TOKEN:-not set}"
@@ -100,7 +104,12 @@ main() {
   log_info "Launching Claude Code with model: ${CLAUDE_CODE_MODEL}"
   printf '\n'
 
-  exec claude --model "${CLAUDE_CODE_MODEL}"
+  # Build command with optional flags
+  if [ -n "${CLAUDE_CODE_FLAGS}" ]; then
+    exec claude --model "${CLAUDE_CODE_MODEL}" ${CLAUDE_CODE_FLAGS}
+  else
+    exec claude --model "${CLAUDE_CODE_MODEL}"
+  fi
 }
 
 # Run main

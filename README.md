@@ -87,12 +87,14 @@ make stop
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLAUDE_CODE_MODEL` | `qwen3-coder` | Ollama model to use |
+| `MODEL` | `glm-5:cloud` | Ollama model to use |
 | `OLLAMA_PORT` | `11434` | Host Ollama port |
 | `WORKSPACE` | Current directory | Directory to mount |
+| `FLAGS` | *(empty)* | Additional flags for Claude Code (e.g., `--allow-dangerously-skip-permissions`) |
 | `CLAUDE_CODE_SANDBOX_NAME` | Auto-generated | Custom sandbox name |
 | `CLAUDE_CODE_VERSION` | `latest` | Claude Code version |
 | `CLAUDE_CODE_TEMPLATE_TAG` | `claude-code-sandbox-template:warm` | Template image tag |
+| `FLAGS` | `` | Additional flags to pass to Claude Code (e.g., `--allow-dangerously-skip-permissions`) |
 
 ### Example Usage
 
@@ -105,6 +107,12 @@ WORKSPACE=/path/to/project make run
 
 # Custom Ollama port
 OLLAMA_PORT=11435 make run
+
+# Skip permission checks (useful for automation)
+FLAGS='--allow-dangerously-skip-permissions' make run
+
+# Combine multiple options
+FLAGS='--allow-dangerously-skip-permissions' MODEL=glm-4.7-flash make run
 ```
 
 ## How It Works

@@ -57,18 +57,28 @@ set -euo pipefail
 
 ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://host.docker.internal:11434}"
 CLAUDE_CODE_MODEL="${CLAUDE_CODE_MODEL:-glm-5:cloud}"
+CLAUDE_CODE_FLAGS="${CLAUDE_CODE_FLAGS:-}"
 WORKSPACE="${WORKSPACE:-$PWD}"
 
 printf "Claude Code Docker Sandbox\n"
 printf "Model: %s\n" "${CLAUDE_CODE_MODEL}"
 printf "Ollama: %s\n" "${ANTHROPIC_BASE_URL}"
-printf "Workspace: %s\n\n" "${WORKSPACE}"
+printf "Workspace: %s\n" "${WORKSPACE}"
+if [ -n "${CLAUDE_CODE_FLAGS}" ]; then
+  printf "Flags: %s\n" "${CLAUDE_CODE_FLAGS}"
+fi
+printf "\n"
 
 if [ -d "${WORKSPACE}" ]; then
   cd "${WORKSPACE}"
 fi
 
-exec claude --model "${CLAUDE_CODE_MODEL}"
+# Launch Claude Code with optional flags
+if [ -n "${CLAUDE_CODE_FLAGS}" ]; then
+  exec claude --model "${CLAUDE_CODE_MODEL}" ${CLAUDE_CODE_FLAGS}
+else
+  exec claude --model "${CLAUDE_CODE_MODEL}"
+fi
 SCRIPT
 
     chmod +x /usr/local/bin/start-claude-code.sh
