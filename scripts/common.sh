@@ -190,6 +190,7 @@ provision_sandbox() {
     --privileged \
     -u root \
     -e "CLAUDE_CODE_VERSION=${claude_version}" \
+    -e "ASSET_ROOT=${asset_root}" \
     "${sandbox_name}" \
     bash -lc '
       set -euo pipefail
@@ -211,8 +212,8 @@ provision_sandbox() {
       install -d -m 0755 /usr/local/bin
 
       # Copy start script if available
-      if [ -f "${asset_root}/image/start-claude-code.sh" ]; then
-        install -m 0755 "${asset_root}/image/start-claude-code.sh" /usr/local/bin/start-claude-code.sh
+      if [ -f "${ASSET_ROOT}/image/start-claude-code.sh" ]; then
+        install -m 0755 "${ASSET_ROOT}/image/start-claude-code.sh" /usr/local/bin/start-claude-code.sh
         chown -R agent:agent /usr/local/bin/start-claude-code.sh 2>/dev/null || true
       fi
     '
