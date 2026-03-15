@@ -21,7 +21,7 @@ const (
 	DefaultOllamaURL = "http://localhost:11434"
 
 	// DefaultTemplateTag is the default Docker template image tag.
-	DefaultTemplateTag = "cloma-sandbox-template:warm"
+	DefaultTemplateTag = "claude-code-sandbox-template:warm"
 
 	// StateDirName is the name of the state directory in the user's home.
 	StateDirName = ".cloma"

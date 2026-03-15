@@ -125,7 +125,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Create sandbox client
 	sandboxClient := sandbox.NewClient(
 		sandbox.WithTemplateTag(config.GetTemplateTag()),
-		sandbox.WithStartScriptPath("./image/start-agent.sh"),
 	)
 
 	// Ensure sandbox exists

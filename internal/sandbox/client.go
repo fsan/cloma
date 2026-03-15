@@ -18,8 +18,8 @@ type SandboxClient struct {
 	// Default: "latest"
 	AgentVersion string
 
-	// StartScriptPath is the path to the start-agent.sh script.
-	// Default: "./image/start-agent.sh" (relative to project root)
+	// StartScriptPath is the path to the start-claude-code.sh script.
+	// Default: "./image/start-claude-code.sh" (relative to project root)
 	StartScriptPath string
 }
 
@@ -51,9 +51,9 @@ func WithStartScriptPath(path string) Option {
 // Options can be passed to customize the client.
 func NewClient(opts ...Option) *SandboxClient {
 	c := &SandboxClient{
-		TemplateTag:     "cloma-sandbox-template:warm",
+		TemplateTag:     "claude-code-sandbox-template:warm",
 		AgentVersion:    "latest",
-		StartScriptPath: "./image/start-agent.sh",
+		StartScriptPath: "./image/start-claude-code.sh",
 	}
 	for _, opt := range opts {
 		opt(c)

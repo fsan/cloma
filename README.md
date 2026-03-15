@@ -60,7 +60,7 @@ This project creates a secure, isolated environment for code agents using Docker
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/cloma.git
+git clone https://github.com/fsan/cloma.git
 cd cloma
 
 # Build
@@ -73,7 +73,7 @@ make install
 ### Using Go Install
 
 ```bash
-go install github.com/yourusername/cloma/cmd/cloma@latest
+go install github.com/fsan/cloma/cmd/cloma@latest
 ```
 
 ## Quick Start
@@ -86,7 +86,7 @@ cloma
 cloma --workspace ~/myproject
 
 # Run with specific model
-cloma --model glm-4.7-flash
+cloma --model glm-5:cloud
 
 # List all managed sandboxes
 cloma list
