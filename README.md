@@ -204,7 +204,7 @@ cloma doctor --json
 #   /Users/you/myproject
 # Checking warm template... WARN
 #   Warm template not found: cloma-sandbox-template:warm
-#   First run will be slower. Run: make template
+#   First run will be slower. Warm templates are optional.
 # Checking sandbox... OK
 #   cloma-myproject-a1b2c3d4 (stopped)
 #

@@ -375,7 +375,7 @@ func checkTemplate(templateTag string) CheckResult {
 			Name:    "Template",
 			Status:  "WARN",
 			Message: fmt.Sprintf("Warm template not found: %s", templateTag),
-			Hint:    "First run will be slower. Run: make template",
+			Hint:    "First run will be slower. Warm templates are optional.",
 		}
 	}
 
