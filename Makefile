@@ -34,9 +34,7 @@ help:
 	@echo "  cloma       Run cloma with custom ARGS (e.g., make cloma ARGS='list')"
 
 # Build targets
-build: $(CLOMA_BIN)
-
-$(CLOMA_BIN):
+build:
 	go build $(LDFLAGS) -o $(CLOMA_BIN) ./cmd/cloma
 
 install: build
