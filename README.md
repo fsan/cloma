@@ -118,12 +118,33 @@ cloma --flags '--allow-dangerously-skip-permissions'
 cloma -w ~/myproject -m glm-4.7-flash --flags '--verbose'
 ```
 
+### Choosing the code agent
+
+By default `cloma run` launches **Claude Code** inside the sandbox. Pass
+`--agent grok` to launch **Grok Build** (`grok`) instead. Both agents are
+driven by the same Ollama instance running on your host.
+
+```bash
+# Launch Grok Build (default model)
+cloma --agent grok
+
+# Launch Grok Build with a specific model and workspace
+cloma --agent grok -w ~/myproject -m glm-4.7-flash
+```
+
+When `--agent grok` is used, cloma writes a `~/.grok/config.toml` inside the
+sandbox pointing Grok Build at the host Ollama instance (OpenAI-compatible
+`/v1` endpoint) and selects the model via `grok -m ollama`. No `grok login` is
+required — a dummy API key is written into the model config so Grok Build
+runs against the local Ollama without browser authentication.
+
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--workspace` | `-w` | `.` (current dir) | Workspace directory |
 | `--model` | `-m` | `glm-5:cloud` | AI model to use |
 | `--port` | `-p` | `11434` | Ollama port |
 | `--flags` | `-f` | (empty) | Additional agent flags |
+| `--agent` | | `claude` | Code agent: `claude` (Claude Code) or `grok` (Grok Build) |
 
 ### `cloma list`
 
@@ -274,6 +295,7 @@ Example:
 
 | Variable | Description |
 |----------|-------------|
+| `CLOMA_AGENT` | Code agent to run: `claude` (default) or `grok` |
 | `CLOMA_MODEL` | AI model to use (default: `glm-5:cloud`) |
 | `OLLAMA_PORT` | Host Ollama port (default: `11434`) |
 | `OLLAMA_URL` | Ollama base URL (default: `http://localhost:11434`) |

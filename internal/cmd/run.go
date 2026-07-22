@@ -18,6 +18,7 @@ var (
 	runModel     string
 	runPort      int
 	runFlags     string
+	runAgent     string
 )
 
 // runCmd represents the run command
@@ -41,12 +42,27 @@ specified workspace directory and can connect to Ollama running on the host.`,
 func init() {
 	rootCmd.AddCommand(runCmd)
 
-	runCmd.Flags().StringVarP(&runWorkspace, "workspace", "w", "", "Workspace directory (default: current directory)")
-	runCmd.Flags().StringVarP(&runModel, "model", "m", "", "AI model to use (default: glm-5:cloud)")
-	runCmd.Flags().IntVarP(&runPort, "port", "p", 0, "Ollama port (default: 11434)")
-	runCmd.Flags().StringVarP(&runFlags, "flags", "f", "", "Additional flags to pass to the agent")
+	// Register the run flags on both the `run` subcommand and the root command.
+	// They share the same backing variables, so `cloma run --agent grok` and
+	// `cloma --agent grok` (no subcommand) behave identically. The root command
+	// defaults to running an agent, matching the documented quick-start form.
+	addRunFlags(runCmd)
+	addRunFlags(rootCmd)
+	rootCmd.RunE = runRun
 
 	viper.BindPFlag("model", runCmd.Flags().Lookup("model"))
+	viper.BindPFlag("agent", runCmd.Flags().Lookup("agent"))
+}
+
+// addRunFlags binds the run command's flags to the shared package variables
+// on the given command. Safe to call on multiple commands because each
+// command owns an independent flag set.
+func addRunFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVarP(&runWorkspace, "workspace", "w", "", "Workspace directory (default: current directory)")
+	cmd.Flags().StringVarP(&runModel, "model", "m", "", "AI model to use (default: glm-5:cloud)")
+	cmd.Flags().IntVarP(&runPort, "port", "p", 0, "Ollama port (default: 11434)")
+	cmd.Flags().StringVarP(&runFlags, "flags", "f", "", "Additional flags to pass to the agent")
+	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default) or grok (Grok Build)")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -68,6 +84,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	ollamaURL := fmt.Sprintf("http://localhost:%d", ollamaPort)
 
+	// Resolve the code agent (claude by default, grok for Grok Build)
+	agent := runAgent
+	if agent == "" {
+		agent = config.GetAgent()
+	}
+	agent = sandbox.NormalizeAgent(agent)
+
 	// Resolve workspace
 	workspacePath := runWorkspace
 	if workspacePath == "" {
@@ -88,6 +111,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 	fmt.Printf("Model: %s\n", model)
+	fmt.Printf("Agent: %s\n", agent)
 	fmt.Printf("Ollama: http://host.docker.internal:%d\n", ollamaPort)
 	fmt.Printf("Workspace: %s\n", resolvedWorkspace)
 	fmt.Printf("Sandbox: %s\n", sandboxName)
@@ -125,6 +149,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Create sandbox client
 	sandboxClient := sandbox.NewClient(
 		sandbox.WithTemplateTag(config.GetTemplateTag()),
+		sandbox.WithAgent(agent),
 	)
 
 	// Ensure sandbox exists
@@ -162,15 +187,32 @@ func runRun(cmd *cobra.Command, args []string) error {
 	fmt.Println("Launching agent...")
 	fmt.Println()
 
-	// Build environment variables
+	// Build environment variables for the start script.
+	// The script reads these generic CLOMA_* values for both agents and
+	// derives agent-specific configuration (e.g. ANTHROPIC_* for Claude Code,
+	// ~/.grok/config.toml for Grok Build) from them.
+	sandboxOllamaURL := fmt.Sprintf("http://host.docker.internal:%d", ollamaPort)
 	envVars := []string{
-		fmt.Sprintf("ANTHROPIC_AUTH_TOKEN=ollama"),
-		"ANTHROPIC_API_KEY=",
-		fmt.Sprintf("ANTHROPIC_BASE_URL=http://host.docker.internal:%d", ollamaPort),
-		fmt.Sprintf("CLAUDE_CODE_MODEL=%s", model),
+		fmt.Sprintf("CLOMA_AGENT=%s", agent),
+		fmt.Sprintf("CLOMA_MODEL=%s", model),
+		fmt.Sprintf("CLOMA_OLLAMA_URL=%s", sandboxOllamaURL),
+	}
+	// Claude Code also consumes the Anthropic-style variables directly; keep
+	// passing them so the default agent behaves exactly as before.
+	if agent == sandbox.AgentClaude {
+		envVars = append(envVars,
+			"ANTHROPIC_AUTH_TOKEN=ollama",
+			"ANTHROPIC_API_KEY=",
+			fmt.Sprintf("ANTHROPIC_BASE_URL=%s", sandboxOllamaURL),
+			fmt.Sprintf("CLAUDE_CODE_MODEL=%s", model),
+		)
 	}
 	if runFlags != "" {
-		envVars = append(envVars, fmt.Sprintf("CLAUDE_CODE_FLAGS=%s", runFlags))
+		envVars = append(envVars, fmt.Sprintf("CLOMA_FLAGS=%s", runFlags))
+		// Backwards-compatible alias used by the previous Claude Code script.
+		if agent == sandbox.AgentClaude {
+			envVars = append(envVars, fmt.Sprintf("CLAUDE_CODE_FLAGS=%s", runFlags))
+		}
 	}
 
 	// Execute agent in sandbox

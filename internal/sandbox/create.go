@@ -92,10 +92,21 @@ if ! command -v curl >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
 	rm -rf /var/lib/apt/lists/*
 fi
 
-# Install agent CLI if not present
-if ! command -v claude >/dev/null 2>&1; then
-	curl -fsSL https://claude.ai/install.sh | bash
-fi
+# Install the requested agent CLI if not present.
+# CLOMA_AGENT selects which agent to install: "claude" (default) or "grok".
+CLOMA_AGENT="${CLOMA_AGENT:-claude}"
+case "$CLOMA_AGENT" in
+  grok)
+    if ! command -v grok >/dev/null 2>&1; then
+      curl -fsSL https://x.ai/cli/install.sh | bash
+    fi
+    ;;
+  claude|*)
+    if ! command -v claude >/dev/null 2>&1; then
+      curl -fsSL https://claude.ai/install.sh | bash
+    fi
+    ;;
+esac
 
 # Ensure start script directory exists
 install -d -m 0755 /usr/local/bin
@@ -112,6 +123,7 @@ printf "Start script installed successfully\n"
 		"--privileged",
 		"-u", "root",
 		"-e", "CLOMA_AGENT_VERSION="+c.AgentVersion,
+		"-e", "CLOMA_AGENT="+c.Agent,
 		"-e", "SCRIPT_B64="+scriptB64,
 		sandboxName,
 		"bash", "-lc", provisionScript,

@@ -10,8 +10,14 @@ import (
 	"os/exec"
 )
 
-//go:embed start-claude-code.sh
+//go:embed start-agent.sh
 var startScript []byte
+
+// Supported code agents that can be launched inside a sandbox.
+const (
+	AgentClaude = "claude"
+	AgentGrok   = "grok"
+)
 
 // SandboxClient holds configuration for sandbox operations.
 type SandboxClient struct {
@@ -22,6 +28,10 @@ type SandboxClient struct {
 	// AgentVersion is the version of the agent to install.
 	// Default: "latest"
 	AgentVersion string
+
+	// Agent is the code agent to launch inside the sandbox.
+	// Supported values: "claude" (Claude Code, default) and "grok" (Grok Build).
+	Agent string
 }
 
 // Option is a function that configures a SandboxClient.
@@ -41,17 +51,39 @@ func WithAgentVersion(version string) Option {
 	}
 }
 
+// WithAgent sets the code agent to launch inside the sandbox.
+// The value is normalized via NormalizeAgent.
+func WithAgent(agent string) Option {
+	return func(c *SandboxClient) {
+		c.Agent = NormalizeAgent(agent)
+	}
+}
+
 // NewClient creates a new SandboxClient with default configuration.
 // Options can be passed to customize the client.
 func NewClient(opts ...Option) *SandboxClient {
 	c := &SandboxClient{
 		TemplateTag:  "claude-code-sandbox-template:warm",
 		AgentVersion: "latest",
+		Agent:        AgentClaude,
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
 	return c
+}
+
+// NormalizeAgent validates and normalizes an agent name.
+// Unknown values fall back to the default agent (Claude Code).
+func NormalizeAgent(agent string) string {
+	switch agent {
+	case "", AgentClaude:
+		return AgentClaude
+	case AgentGrok:
+		return AgentGrok
+	default:
+		return AgentClaude
+	}
 }
 
 // StartScriptBase64 returns the embedded start script as base64-encoded string.

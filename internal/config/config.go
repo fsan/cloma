@@ -14,6 +14,10 @@ const (
 	// DefaultModel is the default AI model to use.
 	DefaultModel = "glm-5:cloud"
 
+	// DefaultAgent is the default code agent to run inside the sandbox.
+	// Supported values: "claude" (Claude Code) and "grok" (Grok Build).
+	DefaultAgent = "claude"
+
 	// DefaultOllamaPort is the default port for Ollama.
 	DefaultOllamaPort = 11434
 
@@ -34,6 +38,9 @@ const (
 type Config struct {
 	// Model is the AI model to use.
 	Model string
+
+	// Agent is the code agent to run inside the sandbox ("claude" or "grok").
+	Agent string
 
 	// OllamaPort is the port where Ollama is running.
 	OllamaPort int
@@ -56,6 +63,7 @@ type Config struct {
 func Initialize() error {
 	// Set default values
 	viper.SetDefault("model", DefaultModel)
+	viper.SetDefault("agent", DefaultAgent)
 	viper.SetDefault("ollama_port", DefaultOllamaPort)
 	viper.SetDefault("ollama_url", DefaultOllamaURL)
 	viper.SetDefault("template_tag", DefaultTemplateTag)
@@ -63,6 +71,7 @@ func Initialize() error {
 	// Bind environment variables
 	viper.SetEnvPrefix("CLOMA")
 	viper.BindEnv("model", "CLOMA_MODEL")
+	viper.BindEnv("agent", "CLOMA_AGENT")
 
 	// Also support OLLAMA_PORT and OLLAMA_URL directly
 	viper.BindEnv("ollama_port", "OLLAMA_PORT")
@@ -92,6 +101,7 @@ func Initialize() error {
 func Get() *Config {
 	return &Config{
 		Model:         viper.GetString("model"),
+		Agent:         viper.GetString("agent"),
 		OllamaPort:    viper.GetInt("ollama_port"),
 		OllamaURL:     viper.GetString("ollama_url"),
 		TemplateTag:   viper.GetString("template_tag"),
@@ -142,6 +152,11 @@ func EnsureAllDirs() error {
 // GetModel returns the configured model.
 func GetModel() string {
 	return viper.GetString("model")
+}
+
+// GetAgent returns the configured code agent ("claude" or "grok").
+func GetAgent() string {
+	return viper.GetString("agent")
 }
 
 // GetOllamaPort returns the configured Ollama port.
