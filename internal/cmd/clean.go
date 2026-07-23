@@ -14,6 +14,7 @@ import (
 )
 
 var cleanWorkspace string
+var cleanName string
 var cleanForce bool
 
 // cleanCmd represents the clean command
@@ -26,6 +27,10 @@ This command stops and removes the sandbox for the specified workspace.
 All data in the sandbox will be lost, but the workspace directory on the host
 is preserved.
 
+Use --name to remove a sandbox by its name directly, bypassing name generation
+from the workspace path. When --name is not provided, the sandbox name is
+derived from the workspace directory (default: current directory).
+
 Use --force to skip the confirmation prompt.`,
 	RunE: runClean,
 }
@@ -34,6 +39,7 @@ func init() {
 	rootCmd.AddCommand(cleanCmd)
 
 	cleanCmd.Flags().StringVarP(&cleanWorkspace, "workspace", "w", "", "Workspace directory (default: current directory)")
+	cleanCmd.Flags().StringVarP(&cleanName, "name", "n", "", "Sandbox name (overrides name generation from workspace)")
 	cleanCmd.Flags().BoolVarP(&cleanForce, "force", "f", false, "Skip confirmation prompt")
 }
 
@@ -43,19 +49,33 @@ func runClean(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize config: %w", err)
 	}
 
-	// Resolve workspace
-	workspacePath := cleanWorkspace
-	if workspacePath == "" {
-		workspacePath = "."
-	}
+	// Determine the sandbox name: use a positional argument if provided,
+	// then --name, otherwise derive it from the workspace path (default:
+	// current directory).
+	var sandboxName string
+	var resolvedWorkspace string
 
-	resolvedWorkspace, err := workspace.Resolve(workspacePath)
-	if err != nil {
-		return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
-	}
+	if len(args) > 0 && args[0] != "" {
+		sandboxName = args[0]
+		resolvedWorkspace = "<by name>"
+	} else if cleanName != "" {
+		sandboxName = cleanName
+		resolvedWorkspace = "<by name>"
+	} else {
+		workspacePath := cleanWorkspace
+		if workspacePath == "" {
+			workspacePath = "."
+		}
 
-	// Generate sandbox name
-	sandboxName := workspace.SandboxName(resolvedWorkspace)
+		var err error
+		resolvedWorkspace, err = workspace.Resolve(workspacePath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
+		}
+
+		// Generate sandbox name from workspace path
+		sandboxName = workspace.SandboxName(resolvedWorkspace)
+	}
 
 	// Check prerequisites
 	if _, err := exec.LookPath("docker"); err != nil {

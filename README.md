@@ -201,6 +201,9 @@ cloma clean --force
 
 # Remove specific workspace's sandbox
 cloma clean --workspace ~/myproject
+
+# Remove by sandbox name directly (bypasses name generation from workspace)
+cloma clean --name cloma-myproject-a1b2c3d4
 ```
 
 ### `cloma doctor`
