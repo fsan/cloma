@@ -27,8 +27,11 @@ This command stops and removes the sandbox for the specified workspace.
 All data in the sandbox will be lost, but the workspace directory on the host
 is preserved.
 
-Use --name to remove a sandbox by its name directly, bypassing name generation
-from the workspace path. When --name is not provided, the sandbox name is
+Use --name (or a positional argument) to remove a sandbox by name, bypassing
+name generation from the workspace path. The value is treated as a label:
+cloma slugifies it and ensures the "cloma-" prefix, so passing either a label
+(e.g. "instance1") or a full name copied from 'cloma list' (e.g.
+"cloma-instance1") works. When --name is not provided, the sandbox name is
 derived from the workspace directory (default: current directory).
 
 Use --force to skip the confirmation prompt.`,
@@ -56,10 +59,18 @@ func runClean(cmd *cobra.Command, args []string) error {
 	var resolvedWorkspace string
 
 	if len(args) > 0 && args[0] != "" {
-		sandboxName = args[0]
+		name, err := workspace.ResolveSandboxName(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid sandbox name %q: %w", args[0], err)
+		}
+		sandboxName = name
 		resolvedWorkspace = "<by name>"
 	} else if cleanName != "" {
-		sandboxName = cleanName
+		name, err := workspace.ResolveSandboxName(cleanName)
+		if err != nil {
+			return fmt.Errorf("invalid sandbox name %q: %w", cleanName, err)
+		}
+		sandboxName = name
 		resolvedWorkspace = "<by name>"
 	} else {
 		workspacePath := cleanWorkspace

@@ -12,6 +12,7 @@ import (
 )
 
 var shellWorkspace string
+var shellName string
 
 // shellCmd represents the shell command
 var shellCmd = &cobra.Command{
@@ -30,6 +31,7 @@ func init() {
 	rootCmd.AddCommand(shellCmd)
 
 	shellCmd.Flags().StringVarP(&shellWorkspace, "workspace", "w", "", "Workspace directory (default: current directory)")
+	shellCmd.Flags().StringVarP(&shellName, "name", "n", "", "Sandbox name (overrides name generation from workspace)")
 }
 
 func runShell(cmd *cobra.Command, args []string) error {
@@ -49,8 +51,17 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
 	}
 
-	// Generate sandbox name
-	sandboxName := workspace.SandboxName(resolvedWorkspace)
+	// Generate sandbox name: use the user-supplied label (--name) when given,
+	// otherwise derive it from the workspace path.
+	var sandboxName string
+	if shellName != "" {
+		sandboxName, err = workspace.ResolveSandboxName(shellName)
+		if err != nil {
+			return fmt.Errorf("invalid sandbox name %q: %w", shellName, err)
+		}
+	} else {
+		sandboxName = workspace.SandboxName(resolvedWorkspace)
+	}
 
 	// Check prerequisites
 	if _, err := exec.LookPath("docker"); err != nil {

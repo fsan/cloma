@@ -19,6 +19,7 @@ var (
 	runPort      int
 	runFlags     string
 	runAgent     string
+	runName      string
 )
 
 // runCmd represents the run command
@@ -63,6 +64,7 @@ func addRunFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVarP(&runPort, "port", "p", 0, "Ollama port (default: 11434)")
 	cmd.Flags().StringVarP(&runFlags, "flags", "f", "", "Additional flags to pass to the agent")
 	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default), grok (Grok Build) or kimi (Kimi Code)")
+	cmd.Flags().StringVarP(&runName, "name", "n", "", "Name this cloma instance (overrides the workspace-derived sandbox name, enabling multiple instances from the same folder)")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -94,7 +96,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Resolve workspace
 	workspacePath := runWorkspace
 	if workspacePath == "" {
-		workspacePath = "."
+		if runName != "" {
+			// A named instance is meant to run from a real folder, so default
+			// to the current directory instead of creating a random workspace.
+			// This lets several named instances share the same workspace.
+			workspacePath = "."
+		}
+		// else: leave empty so Resolve creates a random workspace.
 	}
 
 	resolvedWorkspace, err := workspace.Resolve(workspacePath)
@@ -102,8 +110,18 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
 	}
 
-	// Generate sandbox name
-	sandboxName := workspace.SandboxName(resolvedWorkspace)
+	// Generate sandbox name: use the user-supplied label (--name) when given,
+	// otherwise derive it from the workspace path. The label lets the user
+	// run several instances from the same folder without name collisions.
+	var sandboxName string
+	if runName != "" {
+		sandboxName, err = workspace.ResolveSandboxName(runName)
+		if err != nil {
+			return fmt.Errorf("invalid sandbox name %q: %w", runName, err)
+		}
+	} else {
+		sandboxName = workspace.SandboxName(resolvedWorkspace)
+	}
 
 	// Display configuration
 	if verbose > 0 {

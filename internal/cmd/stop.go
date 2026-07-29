@@ -11,6 +11,7 @@ import (
 )
 
 var stopWorkspace string
+var stopName string
 
 // stopCmd represents the stop command
 var stopCmd = &cobra.Command{
@@ -29,6 +30,7 @@ func init() {
 	rootCmd.AddCommand(stopCmd)
 
 	stopCmd.Flags().StringVarP(&stopWorkspace, "workspace", "w", "", "Workspace directory (default: current directory)")
+	stopCmd.Flags().StringVarP(&stopName, "name", "n", "", "Sandbox name (overrides name generation from workspace)")
 }
 
 func runStop(cmd *cobra.Command, args []string) error {
@@ -37,19 +39,29 @@ func runStop(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize config: %w", err)
 	}
 
-	// Resolve workspace
-	workspacePath := stopWorkspace
-	if workspacePath == "" {
-		workspacePath = "."
-	}
+	// Generate sandbox name: use the user-supplied label (--name) when given,
+	// otherwise derive it from the workspace path.
+	var sandboxName string
+	if stopName != "" {
+		var err error
+		sandboxName, err = workspace.ResolveSandboxName(stopName)
+		if err != nil {
+			return fmt.Errorf("invalid sandbox name %q: %w", stopName, err)
+		}
+	} else {
+		// Resolve workspace
+		workspacePath := stopWorkspace
+		if workspacePath == "" {
+			workspacePath = "."
+		}
 
-	resolvedWorkspace, err := workspace.Resolve(workspacePath)
-	if err != nil {
-		return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
-	}
+		resolvedWorkspace, err := workspace.Resolve(workspacePath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
+		}
 
-	// Generate sandbox name
-	sandboxName := workspace.SandboxName(resolvedWorkspace)
+		sandboxName = workspace.SandboxName(resolvedWorkspace)
+	}
 
 	// Check prerequisites
 	if _, err := exec.LookPath("docker"); err != nil {

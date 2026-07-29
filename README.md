@@ -158,6 +158,43 @@ entry so Kimi Code runs against the local Ollama without OAuth authentication.
 | `--port` | `-p` | `11434` | Ollama port |
 | `--flags` | `-f` | (empty) | Additional agent flags |
 | `--agent` | | `claude` | Code agent: `claude` (Claude Code), `grok` (Grok Build) or `kimi` (Kimi Code) |
+| `--name` | `-n` | (auto) | Name this cloma instance (overrides the workspace-derived sandbox name) |
+
+### Running multiple instances from the same folder
+
+By default the sandbox name is derived from the workspace path, so a given
+folder maps to a single sandbox. Pass `--name` (or `-n`) to give an instance
+an explicit name, letting you run several agents against the same workspace
+without colliding:
+
+```bash
+# Two independent instances sharing ~/myproject
+cloma --name one   -w ~/myproject --agent claude
+cloma --name two   -w ~/myproject --agent kimi
+
+# When --name is set and --workspace is omitted, the current directory is
+# used as the workspace (instead of creating a random one), so this runs
+# from the folder you are in:
+cloma --name one
+cloma --name two
+```
+
+The value is treated as a **label**: cloma slugifies it (lowercase, hyphens
+for special chars) and ensures the `cloma-` prefix, so `--name one` becomes
+the sandbox `cloma-one`. Passing an already-prefixed name (e.g. one copied
+from `cloma list`) is idempotent. A label with no alphanumeric characters is
+rejected.
+
+Use the same `--name` with the other commands to target a specific instance:
+
+```bash
+cloma shell  --name one
+cloma stop   --name one
+cloma clean  --name one   # or: cloma clean one
+```
+
+Named instances show up in `cloma list` like any other (`cloma-one`,
+`cloma-two`, ...).
 
 ### `cloma list`
 
