@@ -121,8 +121,9 @@ cloma -w ~/myproject -m glm-4.7-flash --flags '--verbose'
 ### Choosing the code agent
 
 By default `cloma run` launches **Claude Code** inside the sandbox. Pass
-`--agent grok` to launch **Grok Build** (`grok`) instead. Both agents are
-driven by the same Ollama instance running on your host.
+`--agent grok` to launch **Grok Build** (`grok`), or `--agent kimi` to launch
+**Kimi Code** (`kimi`) instead. All agents are driven by the same Ollama
+instance running on your host.
 
 ```bash
 # Launch Grok Build (default model)
@@ -130,6 +131,12 @@ cloma --agent grok
 
 # Launch Grok Build with a specific model and workspace
 cloma --agent grok -w ~/myproject -m glm-4.7-flash
+
+# Launch Kimi Code
+cloma --agent kimi
+
+# Launch Kimi Code with a specific model and workspace
+cloma --agent kimi -w ~/myproject -m glm-4.7-flash
 ```
 
 When `--agent grok` is used, cloma writes a `~/.grok/config.toml` inside the
@@ -138,13 +145,19 @@ sandbox pointing Grok Build at the host Ollama instance (OpenAI-compatible
 required — a dummy API key is written into the model config so Grok Build
 runs against the local Ollama without browser authentication.
 
+When `--agent kimi` is used, cloma writes a `~/.kimi-code/config.toml` inside
+the sandbox pointing Kimi Code at the host Ollama instance (OpenAI-compatible
+`/v1` endpoint, `type = "openai"`) and selects the model via `kimi -m ollama`.
+No `kimi login` is required — a dummy API key is embedded in the provider
+entry so Kimi Code runs against the local Ollama without OAuth authentication.
+
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--workspace` | `-w` | `.` (current dir) | Workspace directory |
 | `--model` | `-m` | `glm-5:cloud` | AI model to use |
 | `--port` | `-p` | `11434` | Ollama port |
 | `--flags` | `-f` | (empty) | Additional agent flags |
-| `--agent` | | `claude` | Code agent: `claude` (Claude Code) or `grok` (Grok Build) |
+| `--agent` | | `claude` | Code agent: `claude` (Claude Code), `grok` (Grok Build) or `kimi` (Kimi Code) |
 
 ### `cloma list`
 
@@ -298,7 +311,7 @@ Example:
 
 | Variable | Description |
 |----------|-------------|
-| `CLOMA_AGENT` | Code agent to run: `claude` (default) or `grok` |
+| `CLOMA_AGENT` | Code agent to run: `claude` (default), `grok` or `kimi` |
 | `CLOMA_MODEL` | AI model to use (default: `glm-5:cloud`) |
 | `OLLAMA_PORT` | Host Ollama port (default: `11434`) |
 | `OLLAMA_URL` | Ollama base URL (default: `http://localhost:11434`) |

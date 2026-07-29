@@ -62,7 +62,7 @@ func addRunFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&runModel, "model", "m", "", "AI model to use (default: glm-5:cloud)")
 	cmd.Flags().IntVarP(&runPort, "port", "p", 0, "Ollama port (default: 11434)")
 	cmd.Flags().StringVarP(&runFlags, "flags", "f", "", "Additional flags to pass to the agent")
-	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default) or grok (Grok Build)")
+	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default), grok (Grok Build) or kimi (Kimi Code)")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -84,7 +84,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	ollamaURL := fmt.Sprintf("http://localhost:%d", ollamaPort)
 
-	// Resolve the code agent (claude by default, grok for Grok Build)
+	// Resolve the code agent (claude by default, grok for Grok Build, kimi for Kimi Code)
 	agent := runAgent
 	if agent == "" {
 		agent = config.GetAgent()
@@ -188,9 +188,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	// Build environment variables for the start script.
-	// The script reads these generic CLOMA_* values for both agents and
+	// The script reads these generic CLOMA_* values for all agents and
 	// derives agent-specific configuration (e.g. ANTHROPIC_* for Claude Code,
-	// ~/.grok/config.toml for Grok Build) from them.
+	// ~/.grok/config.toml for Grok Build, ~/.kimi-code/config.toml for Kimi
+	// Code) from them.
 	sandboxOllamaURL := fmt.Sprintf("http://host.docker.internal:%d", ollamaPort)
 	envVars := []string{
 		fmt.Sprintf("CLOMA_AGENT=%s", agent),

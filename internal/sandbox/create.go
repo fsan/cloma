@@ -93,12 +93,17 @@ if ! command -v curl >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
 fi
 
 # Install the requested agent CLI if not present.
-# CLOMA_AGENT selects which agent to install: "claude" (default) or "grok".
+# CLOMA_AGENT selects which agent to install: "claude" (default), "grok" or "kimi".
 CLOMA_AGENT="${CLOMA_AGENT:-claude}"
 case "$CLOMA_AGENT" in
   grok)
     if ! command -v grok >/dev/null 2>&1; then
       curl -fsSL https://x.ai/cli/install.sh | bash
+    fi
+    ;;
+  kimi)
+    if ! command -v kimi >/dev/null 2>&1; then
+      curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash
     fi
     ;;
   claude|*)
