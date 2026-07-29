@@ -204,6 +204,15 @@ write_kimi_config() {
 
   mkdir -p "${config_dir}"
 
+  # Kimi Code's OpenAI client is Node fetch (undici), which cannot use the
+  # cloma network proxy: the proxy accepts only non-tunneling requests
+  # (curl-style), while undici ignores HTTP_PROXY by default and tunnels
+  # (CONNECT) when forced via NODE_USE_ENV_PROXY — the proxy rejects that.
+  # cloma maps the sandbox's localhost:<port> directly to the host Ollama
+  # (--allow-host localhost:<port>), which fetch reaches with no proxy. Use
+  # that host instead of host.docker.internal for kimi only.
+  local kimi_ollama_url="${CLOMA_OLLAMA_URL//host.docker.internal/localhost}"
+
   # The "ollama" model alias selects the custom provider entry below.
   # `default_model` makes `kimi` (with no -m) use Ollama automatically.
   cat > "${config_file}" <<EOF
@@ -213,7 +222,7 @@ default_permission_mode = "manual"
 
 [providers.ollama]
 type = "openai"
-base_url = "${CLOMA_OLLAMA_URL}/v1"
+base_url = "${kimi_ollama_url}/v1"
 api_key = "ollama"
 
 [models.ollama]
@@ -222,7 +231,7 @@ model = "${CLOMA_MODEL}"
 max_context_size = 262144
 EOF
 
-  log_info "Wrote kimi config to ${config_file}"
+  log_info "Wrote kimi config to ${config_file} (base_url=${kimi_ollama_url}/v1)"
 }
 
 # Launch Kimi Code.
