@@ -151,6 +151,14 @@ the sandbox pointing Kimi Code at the host Ollama instance (OpenAI-compatible
 No `kimi login` is required — a dummy API key is embedded in the provider
 entry so Kimi Code runs against the local Ollama without OAuth authentication.
 
+Kimi Code's OpenAI client (Node `fetch`) cannot use cloma's network proxy,
+which accepts only non-tunneling requests (curl-style), while `fetch` ignores
+`HTTP_PROXY` and tunnels when forced — the proxy rejects that. cloma
+therefore starts a tiny local relay (`~/.kimi-code/ollama_relay.py`, needs
+`python3`, installed automatically during provisioning) that Kimi's `fetch`
+talks to on `127.0.0.1:18999` and which forwards to the host Ollama through
+the proxy the way curl does. The relay is started automatically at launch.
+
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--workspace` | `-w` | `.` (current dir) | Workspace directory |

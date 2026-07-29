@@ -97,6 +97,13 @@ case "$CLOMA_AGENT" in
     if ! command -v kimi >/dev/null 2>&1; then
       curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash
     fi
+    # Kimi's start script runs a small python3 relay to bridge Node fetch to
+    # Ollama through cloma's non-tunneling proxy. Ensure python3 is present.
+    if ! command -v python3 >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y --no-install-recommends python3
+      rm -rf /var/lib/apt/lists/*
+    fi
     ;;
   claude|*)
     if ! command -v claude >/dev/null 2>&1; then

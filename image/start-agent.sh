@@ -194,35 +194,112 @@ launch_grok() {
   fi
 }
 
-# Write Kimi Code's config so it targets the host Ollama via the
-# OpenAI-compatible /v1 endpoint. A dummy API key satisfies Kimi Code's
-# credential requirement so it does not prompt for OAuth login when pointed
-# at a local Ollama instance.
+# Kimi Code's OpenAI client is Node fetch (undici), which cannot reach the
+# host Ollama through cloma's network proxy: the proxy accepts only
+# non-tunneling requests (curl-style), while undici ignores HTTP_PROXY by
+# default and tunnels (CONNECT) when forced via NODE_USE_ENV_PROXY, which the
+# proxy rejects. The sandbox's localhost:<port> is not directly mapped to the
+# host either. So we run a tiny local relay that kimi's fetch talks to
+# directly (127.0.0.1), and which forwards to Ollama through the proxy the
+# way curl does (non-tunneling).
+KIMI_RELAY_PORT="${KIMI_RELAY_PORT:-18999}"
+
+# Start the local Ollama relay (idempotent — reuses one already listening).
+start_kimi_relay() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_error "python3 is required for the kimi Ollama relay but was not found"
+    log_error "re-provision the sandbox: cloma run --agent kimi"
+    exit 1
+  fi
+
+  # Reuse a relay that is already listening (e.g. from a previous launch).
+  if curl -s --noproxy '*' --max-time 1 \
+      "http://127.0.0.1:${KIMI_RELAY_PORT}/api/version" >/dev/null 2>&1; then
+    log_info "kimi Ollama relay already running on 127.0.0.1:${KIMI_RELAY_PORT}"
+    return 0
+  fi
+
+  local relay="${HOME}/.kimi-code/ollama_relay.py"
+  cat > "${relay}" <<'PYEOF'
+#!/usr/bin/env python3
+"""Local non-tunneling relay: fetch -> 127.0.0.1:PORT -> (HTTP_PROXY) -> Ollama.
+Node fetch cannot use cloma's non-tunneling-only proxy; this relay forwards
+like curl does, so kimi only ever talks to localhost."""
+import http.server, urllib.request, sys, os
+UPSTREAM = os.environ.get("KIMI_RELAY_UPSTREAM", "http://host.docker.internal:11434")
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 18999
+
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _forward(self):
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(n) if n else None
+        req = urllib.request.Request(UPSTREAM + self.path, data=body, method=self.command)
+        for k, v in self.headers.items():
+            if k.lower() in ("host", "content-length", "accept-encoding",
+                             "proxy-connection", "connection"):
+                continue
+            req.add_header(k, v)
+        try:
+            resp = urllib.request.urlopen(req, timeout=600)
+        except urllib.error.HTTPError as e:
+            resp = e
+        self.send_response(resp.status)
+        for k, v in resp.headers.items():
+            if k.lower() in ("transfer-encoding", "connection", "content-length"):
+                continue
+            self.send_header(k, v)
+        self.end_headers()
+        while True:
+            chunk = resp.read(4096)
+            if not chunk:
+                break
+            self.wfile.write(chunk); self.wfile.flush()
+    do_GET = _forward
+    do_POST = _forward
+
+http.server.ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+PYEOF
+
+  # Detached so it survives `exec kimi`; dies when the sandbox stops.
+  KIMI_RELAY_UPSTREAM="${CLOMA_OLLAMA_URL}" setsid python3 "${relay}" "${KIMI_RELAY_PORT}" \
+    >/tmp/kimi-relay.log 2>&1 </dev/null &
+
+  local i
+  for i in $(seq 1 25); do
+    if curl -s --noproxy '*' --max-time 1 \
+        "http://127.0.0.1:${KIMI_RELAY_PORT}/api/version" >/dev/null 2>&1; then
+      log_info "kimi Ollama relay listening on 127.0.0.1:${KIMI_RELAY_PORT} -> ${CLOMA_OLLAMA_URL}"
+      return 0
+    fi
+    sleep 0.2
+  done
+  log_error "kimi Ollama relay failed to start (see /tmp/kimi-relay.log)"
+  exit 1
+}
+
+# Write Kimi Code's config so it targets the local relay (which forwards to
+# the host Ollama via the OpenAI-compatible /v1 endpoint). A dummy API key
+# satisfies Kimi Code's credential requirement so it does not prompt for
+# OAuth login when pointed at a local Ollama instance.
 write_kimi_config() {
   local config_dir="${HOME}/.kimi-code"
   local config_file="${config_dir}/config.toml"
 
   mkdir -p "${config_dir}"
 
-  # Kimi Code's OpenAI client is Node fetch (undici), which cannot use the
-  # cloma network proxy: the proxy accepts only non-tunneling requests
-  # (curl-style), while undici ignores HTTP_PROXY by default and tunnels
-  # (CONNECT) when forced via NODE_USE_ENV_PROXY — the proxy rejects that.
-  # cloma maps the sandbox's localhost:<port> directly to the host Ollama
-  # (--allow-host localhost:<port>), which fetch reaches with no proxy. Use
-  # that host instead of host.docker.internal for kimi only.
-  local kimi_ollama_url="${CLOMA_OLLAMA_URL//host.docker.internal/localhost}"
+  local kimi_base_url="http://127.0.0.1:${KIMI_RELAY_PORT}/v1"
 
   # The "ollama" model alias selects the custom provider entry below.
   # `default_model` makes `kimi` (with no -m) use Ollama automatically.
   cat > "${config_file}" <<EOF
-# Generated by cloma. Points Kimi Code at the host Ollama instance.
+# Generated by cloma. Points Kimi Code at the local relay -> host Ollama.
 default_model = "ollama"
 default_permission_mode = "manual"
 
 [providers.ollama]
 type = "openai"
-base_url = "${kimi_ollama_url}/v1"
+base_url = "${kimi_base_url}"
 api_key = "ollama"
 
 [models.ollama]
@@ -231,7 +308,7 @@ model = "${CLOMA_MODEL}"
 max_context_size = 262144
 EOF
 
-  log_info "Wrote kimi config to ${config_file} (base_url=${kimi_ollama_url}/v1)"
+  log_info "Wrote kimi config to ${config_file} (base_url=${kimi_base_url})"
 }
 
 # Launch Kimi Code.
@@ -243,6 +320,9 @@ launch_kimi() {
   # not attempt outbound network calls it cannot reach.
   export KIMI_CODE_NO_AUTO_UPDATE="${KIMI_CODE_NO_AUTO_UPDATE:-1}"
   export KIMI_DISABLE_TELEMETRY="${KIMI_DISABLE_TELEMETRY:-1}"
+
+  # Start the local relay that bridges kimi's fetch to the host Ollama.
+  start_kimi_relay
 
   log_info "Launching Kimi Code with model: ollama (${CLOMA_MODEL})"
   printf '\n'
