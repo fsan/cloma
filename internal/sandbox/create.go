@@ -16,15 +16,14 @@ func (c *SandboxClient) Create(sandboxName, workspace string) error {
 		return fmt.Errorf("failed to check if sandbox exists: %w", err)
 	}
 	if exists {
-		// Check if provisioned
-		provisioned, err := c.isProvisioned(sandboxName)
-		if err != nil {
-			return fmt.Errorf("failed to check if sandbox is provisioned: %w", err)
-		}
-		if !provisioned {
-			if err := c.provisionSandbox(sandboxName); err != nil {
-				return fmt.Errorf("failed to provision existing sandbox: %w", err)
-			}
+		// Always (re)provision an existing sandbox so the embedded start
+		// script and agent CLI match the currently running cloma binary.
+		// The sandbox may have been created/provisioned by an older binary
+		// whose start script lacks support for newer agents (e.g. kimi);
+		// skipping re-provisioning would launch that stale script and fail
+		// with "unknown agent". Re-provisioning is idempotent and cheap.
+		if err := c.provisionSandbox(sandboxName); err != nil {
+			return fmt.Errorf("failed to provision existing sandbox: %w", err)
 		}
 		return nil
 	}
@@ -66,13 +65,6 @@ func (c *SandboxClient) Create(sandboxName, workspace string) error {
 func (c *SandboxClient) templateExists() bool {
 	cmd := exec.Command("docker", "image", "inspect", c.TemplateTag)
 	return cmd.Run() == nil
-}
-
-// isProvisioned checks if the sandbox has the start script installed.
-func (c *SandboxClient) isProvisioned(sandboxName string) (bool, error) {
-	cmd := exec.Command("docker", "sandbox", "exec", sandboxName,
-		"test", "-x", "/usr/local/bin/start-agent.sh")
-	return cmd.Run() == nil, nil
 }
 
 // provisionSandbox installs the agent start script into the sandbox.
