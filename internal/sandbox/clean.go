@@ -6,13 +6,17 @@ import (
 )
 
 // Remove removes a sandbox completely.
-// This deletes the sandbox and all its data.
+// This deletes the sandbox and all its data, including the stored workspace
+// mapping used to decide reuse vs. rebuild on subsequent runs.
 func Remove(sandboxName string) error {
 	cmd := exec.Command("docker", "sandbox", "rm", sandboxName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to remove sandbox %s: %w, output: %s", sandboxName, err, string(output))
 	}
+	// Clean up the workspace registry entry so a later create does not
+	// think the sandbox still exists with the old workspace.
+	_ = RemoveStoredWorkspace(sandboxName)
 	return nil
 }
 

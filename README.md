@@ -139,6 +139,22 @@ cloma --agent kimi
 cloma --agent kimi -w ~/myproject -m glm-4.7-flash
 ```
 
+### Setting environment variables in the sandbox
+
+Pass `--env` (repeatable, `-e` for short) to inject environment variables into
+the agent process running inside the sandbox. Each value must be `KEY=VALUE`:
+
+```bash
+cloma --flags '--yolo' --model 'kimi-k3:cloud' \
+  --env 'KIMI_CODE_EXPERIMENTAL_FLAG=1' \
+  --env 'KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1' \
+  --env 'KIMI_SECONDARY_MODEL=kimi-k2.7-code:cloud' \
+  --agent kimi --name kimi-agent
+```
+
+User-supplied variables are applied last, so they can override the cloma-managed
+defaults (e.g. `CLOMA_MODEL`) when needed.
+
 When `--agent grok` is used, cloma writes a `~/.grok/config.toml` inside the
 sandbox pointing Grok Build at the host Ollama instance (OpenAI-compatible
 `/v1` endpoint) and selects the model via `grok -m ollama`. No `grok login` is
@@ -167,6 +183,7 @@ the proxy the way curl does. The relay is started automatically at launch.
 | `--flags` | `-f` | (empty) | Additional agent flags |
 | `--agent` | | `claude` | Code agent: `claude` (Claude Code), `grok` (Grok Build) or `kimi` (Kimi Code) |
 | `--name` | `-n` | (auto) | Name this cloma instance (overrides the workspace-derived sandbox name) |
+| `--env` | `-e` | (empty) | Environment variable to set in the sandbox (`KEY=VALUE`); repeatable |
 
 ### Running multiple instances from the same folder
 

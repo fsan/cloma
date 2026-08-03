@@ -73,19 +73,14 @@ func runClean(cmd *cobra.Command, args []string) error {
 		sandboxName = name
 		resolvedWorkspace = "<by name>"
 	} else {
-		workspacePath := cleanWorkspace
-		if workspacePath == "" {
-			workspacePath = "."
-		}
-
+		// Derive sandbox name from the workspace path (default: current
+		// directory), with a fallback to the registry for sandboxes created
+		// with --name.
 		var err error
-		resolvedWorkspace, err = workspace.Resolve(workspacePath)
+		sandboxName, resolvedWorkspace, err = resolveSandboxNameFromWorkspace(cleanWorkspace)
 		if err != nil {
-			return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
+			return err
 		}
-
-		// Generate sandbox name from workspace path
-		sandboxName = workspace.SandboxName(resolvedWorkspace)
 	}
 
 	// Check prerequisites

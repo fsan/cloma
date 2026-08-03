@@ -9,6 +9,12 @@ import (
 // Create creates a new sandbox with the given name for the specified workspace.
 // If a warm template is available, it will be used to speed up sandbox creation.
 // The sandbox is provisioned with the agent start script.
+//
+// When a sandbox with the given name already exists:
+//   - If the recorded workspace matches the requested workspace, the existing
+//     sandbox is reused as-is (no re-provisioning, no rebuild).
+//   - If the workspace differs, the old sandbox is removed and a fresh one is
+//     created so the new workspace path is mounted correctly.
 func (c *SandboxClient) Create(sandboxName, workspace string) error {
 	// Check if sandbox already exists
 	exists, err := Exists(sandboxName)
@@ -16,16 +22,23 @@ func (c *SandboxClient) Create(sandboxName, workspace string) error {
 		return fmt.Errorf("failed to check if sandbox exists: %w", err)
 	}
 	if exists {
-		// Always (re)provision an existing sandbox so the embedded start
-		// script and agent CLI match the currently running cloma binary.
-		// The sandbox may have been created/provisioned by an older binary
-		// whose start script lacks support for newer agents (e.g. kimi);
-		// skipping re-provisioning would launch that stale script and fail
-		// with "unknown agent". Re-provisioning is idempotent and cheap.
-		if err := c.provisionSandbox(sandboxName); err != nil {
-			return fmt.Errorf("failed to provision existing sandbox: %w", err)
+		stored, err := GetStoredWorkspace(sandboxName)
+		if err != nil {
+			return fmt.Errorf("failed to read stored workspace: %w", err)
 		}
-		return nil
+
+		if stored == workspace {
+			// The sandbox already exists with the same workspace; reuse it
+			// as-is instead of rebuilding.
+			return nil
+		}
+
+		// The workspace changed: remove the old sandbox so we can create a
+		// fresh one with the new workspace mounted.
+		fmt.Printf("Workspace changed (was %q, now %q); rebuilding sandbox %s\n", stored, workspace, sandboxName)
+		if err := Clean(sandboxName); err != nil {
+			return fmt.Errorf("failed to remove stale sandbox: %w", err)
+		}
 	}
 
 	// Create the sandbox
@@ -56,6 +69,12 @@ func (c *SandboxClient) Create(sandboxName, workspace string) error {
 	// Provision with start script
 	if err := c.provisionSandbox(sandboxName); err != nil {
 		return fmt.Errorf("failed to provision sandbox: %w", err)
+	}
+
+	// Record the workspace so a later run with the same name can detect
+	// whether the sandbox should be reused or rebuilt.
+	if err := StoreWorkspace(sandboxName, workspace); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not store workspace mapping: %v\n", err)
 	}
 
 	return nil

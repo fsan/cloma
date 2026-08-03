@@ -52,7 +52,9 @@ func runShell(cmd *cobra.Command, args []string) error {
 	}
 
 	// Generate sandbox name: use the user-supplied label (--name) when given,
-	// otherwise derive it from the workspace path.
+	// otherwise derive it from the workspace path. If the path-derived name
+	// has no registry entry, fall back to searching the registry for a
+	// sandbox created with --name from this workspace.
 	var sandboxName string
 	if shellName != "" {
 		sandboxName, err = workspace.ResolveSandboxName(shellName)
@@ -61,6 +63,11 @@ func runShell(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		sandboxName = workspace.SandboxName(resolvedWorkspace)
+		if stored, _ := sandbox.GetStoredWorkspace(sandboxName); stored == "" {
+			if found, _ := sandbox.FindByWorkspace(resolvedWorkspace); found != "" {
+				sandboxName = found
+			}
+		}
 	}
 
 	// Check prerequisites

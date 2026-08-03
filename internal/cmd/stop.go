@@ -15,12 +15,19 @@ var stopName string
 
 // stopCmd represents the stop command
 var stopCmd = &cobra.Command{
-	Use:   "stop",
+	Use:   "stop [name]",
 	Short: "Stop a running sandbox",
 	Long: `Stop a running Docker sandbox.
 
 This command stops the sandbox for the specified workspace.
 The sandbox is preserved and can be restarted later with 'cloma run' or 'cloma shell'.
+
+Use a positional argument or --name (or -n) to stop a sandbox by name, bypassing
+name generation from the workspace path. The value is treated as a label:
+cloma slugifies it and ensures the "cloma-" prefix, so passing either a label
+(e.g. "instance1") or a full name copied from 'cloma list' (e.g.
+"cloma-instance1") works. When no name is provided, the sandbox name is
+derived from the workspace directory (default: current directory).
 
 If the sandbox does not exist or is already stopped, this command does nothing.`,
 	RunE: runStop,
@@ -39,28 +46,31 @@ func runStop(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize config: %w", err)
 	}
 
-	// Generate sandbox name: use the user-supplied label (--name) when given,
-	// otherwise derive it from the workspace path.
+	// Determine the sandbox name: use a positional argument if provided,
+	// then --name, otherwise derive it from the workspace path (default:
+	// current directory).
 	var sandboxName string
-	if stopName != "" {
+	if len(args) > 0 && args[0] != "" {
+		name, err := workspace.ResolveSandboxName(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid sandbox name %q: %w", args[0], err)
+		}
+		sandboxName = name
+	} else if stopName != "" {
 		var err error
 		sandboxName, err = workspace.ResolveSandboxName(stopName)
 		if err != nil {
 			return fmt.Errorf("invalid sandbox name %q: %w", stopName, err)
 		}
 	} else {
-		// Resolve workspace
-		workspacePath := stopWorkspace
-		if workspacePath == "" {
-			workspacePath = "."
-		}
-
-		resolvedWorkspace, err := workspace.Resolve(workspacePath)
+		// Derive sandbox name from the workspace path (default: current
+		// directory), with a fallback to the registry for sandboxes created
+		// with --name.
+		var err error
+		sandboxName, _, err = resolveSandboxNameFromWorkspace(stopWorkspace)
 		if err != nil {
-			return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
+			return err
 		}
-
-		sandboxName = workspace.SandboxName(resolvedWorkspace)
 	}
 
 	// Check prerequisites

@@ -17,7 +17,7 @@ var listCmd = &cobra.Command{
 	Long: `List all Docker Desktop sandboxes managed by cloma.
 
 Sandboxes managed by cloma have names starting with "cloma-".
-The list shows the sandbox name, status, and the decoded workspace path.`,
+The list shows the sandbox name, status, and the recorded workspace path.`,
 	RunE: runList,
 }
 
@@ -47,8 +47,14 @@ func runList(cmd *cobra.Command, args []string) error {
 				Name:   sb.Name,
 				Status: sb.Status,
 			}
-			// Try to decode workspace from name
-			info.Workspace = decodeWorkspaceFromName(sb.Name)
+			// Look up the workspace from the sandbox registry rather than
+			// trying to decode it from the name. Label-based names (created
+			// with --name) have no path hash, so name-based decoding does not
+			// work for them.
+			ws, err := sandbox.GetStoredWorkspace(sb.Name)
+			if err == nil {
+				info.Workspace = ws
+			}
 			clomaSandboxes = append(clomaSandboxes, info)
 		}
 	}
@@ -87,31 +93,4 @@ func outputText(sandboxes []SandboxInfo) error {
 	}
 
 	return nil
-}
-
-// decodeWorkspaceFromName attempts to decode the workspace path from a sandbox name.
-// Sandbox names follow the pattern: cloma-{slug}-{hash}
-// The slug is derived from the workspace path basename.
-func decodeWorkspaceFromName(name string) string {
-	// Remove "cloma-" prefix
-	if !strings.HasPrefix(name, "cloma-") {
-		return ""
-	}
-
-	// Extract the slug part (everything after prefix, minus the hash suffix)
-	parts := strings.TrimPrefix(name, "cloma-")
-
-	// The hash is 8 characters at the end
-	if len(parts) < 10 { // minimum: slug + "-" + 8-char hash
-		return ""
-	}
-
-	// Find the last hyphen to separate slug from hash
-	lastHyphen := strings.LastIndex(parts, "-")
-	if lastHyphen == -1 {
-		return ""
-	}
-
-	slug := parts[:lastHyphen]
-	return slug
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/fsan/cloma/internal/config"
 	"github.com/fsan/cloma/internal/ollama"
@@ -20,6 +21,7 @@ var (
 	runFlags     string
 	runAgent     string
 	runName      string
+	runEnv       []string
 )
 
 // runCmd represents the run command
@@ -65,6 +67,9 @@ func addRunFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&runFlags, "flags", "f", "", "Additional flags to pass to the agent")
 	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default), grok (Grok Build) or kimi (Kimi Code)")
 	cmd.Flags().StringVarP(&runName, "name", "n", "", "Name this cloma instance (overrides the workspace-derived sandbox name, enabling multiple instances from the same folder)")
+	// --env can be repeated to inject multiple environment variables into the
+	// sandbox. Each value must be in KEY=VALUE form, e.g. --env 'DEBUG=1'.
+	cmd.Flags().StringArrayVarP(&runEnv, "env", "e", nil, "Environment variable to set in the sandbox (KEY=VALUE); repeatable")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -110,6 +115,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
 	}
 
+	// Validate user-supplied --env entries before doing any work so a
+	// malformed value fails fast instead of after sandbox provisioning.
+	for _, e := range runEnv {
+		if !isValidEnvAssignment(e) {
+			return fmt.Errorf("invalid --env value %q: expected KEY=VALUE form (e.g. --env 'DEBUG=1')", e)
+		}
+	}
+
 	// Generate sandbox name: use the user-supplied label (--name) when given,
 	// otherwise derive it from the workspace path. The label lets the user
 	// run several instances from the same folder without name collisions.
@@ -135,6 +148,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Sandbox: %s\n", sandboxName)
 	if runFlags != "" {
 		fmt.Printf("Flags: %s\n", runFlags)
+	}
+	if len(runEnv) > 0 {
+		fmt.Printf("Env: %s\n", strings.Join(runEnv, " "))
 	}
 	fmt.Println()
 
@@ -234,8 +250,34 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Append user-supplied --env entries last so they can override any of the
+	// cloma-managed variables above (e.g. CLOMA_MODEL) if the user wants to.
+	envVars = append(envVars, runEnv...)
+
 	// Execute agent in sandbox
 	return launchAgent(sandboxName, resolvedWorkspace, envVars)
+}
+
+// isValidEnvAssignment reports whether s is a valid KEY=VALUE assignment
+// suitable for passing through to the sandbox with `docker exec -e`.
+// The key must be a non-empty shell-style identifier and may not contain a
+// space; the value may be empty.
+func isValidEnvAssignment(s string) bool {
+	eq := strings.IndexByte(s, '=')
+	if eq <= 0 {
+		return false
+	}
+	key := s[:eq]
+	if key == "" || strings.ContainsAny(key, " \t") {
+		return false
+	}
+	// First character must be a letter or underscore to match shell env
+	// variable naming conventions.
+	c := key[0]
+	if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+		return false
+	}
+	return true
 }
 
 func launchAgent(sandboxName, workspacePath string, envVars []string) error {
