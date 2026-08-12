@@ -15,9 +15,10 @@ var startScript []byte
 
 // Supported code agents that can be launched inside a sandbox.
 const (
-	AgentClaude = "claude"
-	AgentGrok   = "grok"
-	AgentKimi   = "kimi"
+	AgentClaude   = "claude"
+	AgentGrok     = "grok"
+	AgentKimi     = "kimi"
+	AgentOpenClaw = "openclaw"
 )
 
 // SandboxClient holds configuration for sandbox operations.
@@ -31,8 +32,8 @@ type SandboxClient struct {
 	AgentVersion string
 
 	// Agent is the code agent to launch inside the sandbox.
-	// Supported values: "claude" (Claude Code, default), "grok" (Grok Build)
-	// and "kimi" (Kimi Code).
+	// Supported values: "claude" (Claude Code, default), "grok" (Grok Build),
+	// "kimi" (Kimi Code) and "openclaw" (OpenClaw).
 	Agent string
 }
 
@@ -85,6 +86,8 @@ func NormalizeAgent(agent string) string {
 		return AgentGrok
 	case AgentKimi:
 		return AgentKimi
+	case AgentOpenClaw:
+		return AgentOpenClaw
 	default:
 		return AgentClaude
 	}

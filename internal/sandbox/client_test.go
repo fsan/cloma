@@ -11,6 +11,7 @@ func TestNormalizeAgent(t *testing.T) {
 		{"CLAUDE", AgentClaude}, // unknown value falls back to default
 		{"grok", AgentGrok},
 		{"kimi", AgentKimi},
+		{"openclaw", AgentOpenClaw},
 		{"unknown", AgentClaude},
 	}
 	for _, c := range cases {
@@ -21,7 +22,7 @@ func TestNormalizeAgent(t *testing.T) {
 }
 
 func TestWithAgent(t *testing.T) {
-	for _, agent := range []string{AgentClaude, AgentGrok, AgentKimi} {
+	for _, agent := range []string{AgentClaude, AgentGrok, AgentKimi, AgentOpenClaw} {
 		c := NewClient(WithAgent(agent))
 		if c.Agent != agent {
 			t.Errorf("WithAgent(%q): c.Agent = %q, want %q", agent, c.Agent, agent)

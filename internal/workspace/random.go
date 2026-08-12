@@ -66,3 +66,14 @@ func randomHex(n int) (string, error) {
 	}
 	return hex.EncodeToString(bytes), nil
 }
+
+// RandomSandboxName returns a random cloma-prefixed sandbox name with an
+// 8-character hex suffix. It is used when there is no real workspace path to
+// derive the name from, e.g. when --tempfs is used without --name.
+func RandomSandboxName() (string, error) {
+	suffix, err := randomHex(4) // 4 bytes -> 8 hex chars
+	if err != nil {
+		return "", err
+	}
+	return "cloma-" + suffix, nil
+}

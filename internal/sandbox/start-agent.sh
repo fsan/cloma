@@ -2,11 +2,12 @@
 # Entry point script for code agents in Docker sandbox.
 #
 # This script is copied into the sandbox and executed to start a code agent.
-# It supports three agents, selected via the CLOMA_AGENT environment variable:
+# It supports four agents, selected via the CLOMA_AGENT environment variable:
 #
 #   - claude (default): Claude Code, driven by the Anthropic Messages API.
 #   - grok:             Grok Build, driven by an OpenAI-compatible endpoint.
 #   - kimi:             Kimi Code, driven by an OpenAI-compatible endpoint.
+#   - openclaw:         OpenClaw, driven by Ollama's native API.
 #
 # All agents are pointed at an Ollama instance running on the host. Ollama is
 # verified with its native API, then the selected agent is launched with a
@@ -22,8 +23,9 @@ CLOMA_FLAGS="${CLOMA_FLAGS:-}"
 WORKSPACE="${WORKSPACE:-$PWD}"
 
 # Make sure the per-user agent install locations are on PATH
-# (grok installs to ~/.grok/bin, kimi installs to ~/.kimi-code/bin).
-export PATH="${HOME}/.kimi-code/bin:${HOME}/.grok/bin:${HOME}/.local/bin:${PATH}"
+# (grok installs to ~/.grok/bin, kimi installs to ~/.kimi-code/bin,
+# openclaw installs to ~/.openclaw/bin).
+export PATH="${HOME}/.openclaw/bin:${HOME}/.kimi-code/bin:${HOME}/.grok/bin:${HOME}/.local/bin:${PATH}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -82,10 +84,11 @@ verify_model() {
 print_info() {
   local agent_name
   case "${CLOMA_AGENT}" in
-    grok)   agent_name="Grok Build" ;;
-    kimi)   agent_name="Kimi Code" ;;
-    claude) agent_name="Claude Code" ;;
-    *)      agent_name="${CLOMA_AGENT}" ;;
+    grok)     agent_name="Grok Build" ;;
+    kimi)     agent_name="Kimi Code" ;;
+    openclaw) agent_name="OpenClaw" ;;
+    claude)   agent_name="Claude Code" ;;
+    *)        agent_name="${CLOMA_AGENT}" ;;
   esac
 
   printf '\n'
@@ -128,8 +131,33 @@ ensure_agent_installed() {
       log_info "Installing Kimi Code..."
       curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash
       ;;
+    openclaw)
+      if command -v openclaw >/dev/null 2>&1; then
+        return 0
+      fi
+      # OpenClaw requires Node.js 22+; provisioning installs it, but fall back
+      # to NodeSource here in case the sandbox was created before this agent
+      # was selected.
+      need_node=0
+      if ! command -v node >/dev/null 2>&1; then
+        need_node=1
+      else
+        node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+        if [ "${node_major}" -lt 22 ]; then
+          need_node=1
+        fi
+      fi
+      if [ "${need_node}" -eq 1 ]; then
+        log_info "Installing Node.js 22 for OpenClaw..."
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+        apt-get install -y --no-install-recommends nodejs
+        rm -rf /var/lib/apt/lists/*
+      fi
+      log_info "Installing OpenClaw..."
+      curl -fsSL https://openclaw.ai/install.sh | bash
+      ;;
     *)
-      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok' or 'kimi')"
+      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi' or 'openclaw')"
       exit 1
       ;;
   esac
@@ -194,39 +222,43 @@ launch_grok() {
   fi
 }
 
-# Kimi Code's OpenAI client is Node fetch (undici), which cannot reach the
-# host Ollama through cloma's network proxy: the proxy accepts only
+# Node-based agents (kimi, openclaw) use Node fetch (undici), which cannot
+# reach the host Ollama through cloma's network proxy: the proxy accepts only
 # non-tunneling requests (curl-style), while undici ignores HTTP_PROXY by
 # default and tunnels (CONNECT) when forced via NODE_USE_ENV_PROXY, which the
 # proxy rejects. The sandbox's localhost:<port> is not directly mapped to the
-# host either. So we run a tiny local relay that kimi's fetch talks to
+# host either. So we run a tiny local relay that the agent's fetch talks to
 # directly (127.0.0.1), and which forwards to Ollama through the proxy the
-# way curl does (non-tunneling).
-KIMI_RELAY_PORT="${KIMI_RELAY_PORT:-18999}"
+# way curl does (non-tunneling). Both kimi and openclaw share this relay:
+# the agent selects the API surface via its own base URL (/v1 for kimi's
+# OpenAI-compatible client, the native /api for openclaw).
+OLLAMA_RELAY_PORT="${OLLAMA_RELAY_PORT:-${KIMI_RELAY_PORT:-18999}}"
+OLLAMA_RELAY_UPSTREAM="${OLLAMA_RELAY_UPSTREAM:-${KIMI_RELAY_UPSTREAM:-http://host.docker.internal:11434}}"
 
 # Start the local Ollama relay (idempotent — reuses one already listening).
-start_kimi_relay() {
+start_ollama_relay() {
   if ! command -v python3 >/dev/null 2>&1; then
-    log_error "python3 is required for the kimi Ollama relay but was not found"
-    log_error "re-provision the sandbox: cloma run --agent kimi"
+    log_error "python3 is required for the Ollama relay but was not found"
+    log_error "re-provision the sandbox: cloma run --agent ${CLOMA_AGENT}"
     exit 1
   fi
 
   # Reuse a relay that is already listening (e.g. from a previous launch).
   if curl -s --noproxy '*' --max-time 1 \
-      "http://127.0.0.1:${KIMI_RELAY_PORT}/api/version" >/dev/null 2>&1; then
-    log_info "kimi Ollama relay already running on 127.0.0.1:${KIMI_RELAY_PORT}"
+      "http://127.0.0.1:${OLLAMA_RELAY_PORT}/api/version" >/dev/null 2>&1; then
+    log_info "Ollama relay already running on 127.0.0.1:${OLLAMA_RELAY_PORT}"
     return 0
   fi
 
-  local relay="${HOME}/.kimi-code/ollama_relay.py"
+  local relay="${HOME}/.ollama-relay/relay.py"
+  mkdir -p "$(dirname "${relay}")"
   cat > "${relay}" <<'PYEOF'
 #!/usr/bin/env python3
 """Local non-tunneling relay: fetch -> 127.0.0.1:PORT -> (HTTP_PROXY) -> Ollama.
 Node fetch cannot use cloma's non-tunneling-only proxy; this relay forwards
-like curl does, so kimi only ever talks to localhost."""
+like curl does, so Node-based agents only ever talk to localhost."""
 import http.server, urllib.request, sys, os
-UPSTREAM = os.environ.get("KIMI_RELAY_UPSTREAM", "http://host.docker.internal:11434")
+UPSTREAM = os.environ.get("OLLAMA_RELAY_UPSTREAM", "http://host.docker.internal:11434")
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 18999
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -261,20 +293,20 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
 PYEOF
 
-  # Detached so it survives `exec kimi`; dies when the sandbox stops.
-  KIMI_RELAY_UPSTREAM="${CLOMA_OLLAMA_URL}" setsid python3 "${relay}" "${KIMI_RELAY_PORT}" \
-    >/tmp/kimi-relay.log 2>&1 </dev/null &
+  # Detached so it survives `exec` of the agent; dies when the sandbox stops.
+  OLLAMA_RELAY_UPSTREAM="${CLOMA_OLLAMA_URL}" setsid python3 "${relay}" "${OLLAMA_RELAY_PORT}" \
+    >/tmp/ollama-relay.log 2>&1 </dev/null &
 
   local i
   for i in $(seq 1 25); do
     if curl -s --noproxy '*' --max-time 1 \
-        "http://127.0.0.1:${KIMI_RELAY_PORT}/api/version" >/dev/null 2>&1; then
-      log_info "kimi Ollama relay listening on 127.0.0.1:${KIMI_RELAY_PORT} -> ${CLOMA_OLLAMA_URL}"
+        "http://127.0.0.1:${OLLAMA_RELAY_PORT}/api/version" >/dev/null 2>&1; then
+      log_info "Ollama relay listening on 127.0.0.1:${OLLAMA_RELAY_PORT} -> ${CLOMA_OLLAMA_URL}"
       return 0
     fi
     sleep 0.2
   done
-  log_error "kimi Ollama relay failed to start (see /tmp/kimi-relay.log)"
+  log_error "Ollama relay failed to start (see /tmp/ollama-relay.log)"
   exit 1
 }
 
@@ -288,7 +320,7 @@ write_kimi_config() {
 
   mkdir -p "${config_dir}"
 
-  local kimi_base_url="http://127.0.0.1:${KIMI_RELAY_PORT}/v1"
+  local kimi_base_url="http://127.0.0.1:${OLLAMA_RELAY_PORT}/v1"
 
   # The "ollama" model alias selects the custom provider entry below.
   # `default_model` makes `kimi` (with no -m) use Ollama automatically.
@@ -360,7 +392,7 @@ launch_kimi() {
   export KIMI_DISABLE_TELEMETRY="${KIMI_DISABLE_TELEMETRY:-1}"
 
   # Start the local relay that bridges kimi's fetch to the host Ollama.
-  start_kimi_relay
+  start_ollama_relay
 
   log_info "Launching Kimi Code with model: ollama (${CLOMA_MODEL})"
   printf '\n'
@@ -370,6 +402,172 @@ launch_kimi() {
     exec kimi -m ollama ${CLOMA_FLAGS}
   else
     exec kimi -m ollama
+  fi
+}
+
+# Write OpenClaw's config so it targets the local relay (which forwards to the
+# host Ollama using Ollama's native API). A dummy API key ("ollama-local") is
+# accepted by OpenClaw for loopback hosts without real auth. The primary model
+# ref is "ollama/<model>" and must match the provider id and a models[] entry.
+#
+# The agent runs inside an isolated sandbox, so the toolset is configured
+# permissively for a coding agent: the "coding" profile (fs, shell, sessions,
+# memory, web, agents, media, plugins), web search + web fetch, memory +
+# planning, tool-loop safety, forced code mode, subagent session visibility,
+# subagent file attachments, shell/exec tuning, image understanding via an
+# Ollama vision model, an empty MCP server map ready for user-defined servers,
+# and an optional Telegram bot channel.
+#
+# Environment overrides (pass via cloma --env):
+#   OPENCLAW_VISION_MODEL        Ollama vision model for images (default: llava).
+#   OPENCLAW_WEB_SEARCH_PROVIDER web search provider (default: ollama, which
+#                               reuses the relay; try duckduckgo for keyless).
+#   TELEGRAM_BOT_TOKEN           Telegram bot token from @BotFather. When set,
+#                               the Telegram channel is enabled and cloma
+#                               launches the OpenClaw gateway (which hosts the
+#                               bot) instead of the TUI.
+#   TELEGRAM_ALLOW_FROM          Comma-separated numeric Telegram user IDs
+#                               allowed to DM the bot.
+#   TELEGRAM_DM_POLICY           DM policy: pairing (default) | allowlist | open | disabled.
+#   TELEGRAM_GROUP_POLICY        Group policy: allowlist (default) | open | disabled.
+#   TELEGRAM_GROUP_ALLOW_FROM    Comma-separated numeric user IDs allowed in groups.
+#
+# Skills: OpenClaw has no non-interactive "install recommended skills" command
+# (recommendations are driven by the interactive onboarding/bootstrap flow), so
+# none are auto-installed. The skill_workshop tool is available via the coding
+# profile; install specific skills with `openclaw skills install @owner/<slug>`.
+write_openclaw_config() {
+  local config_dir="${HOME}/.openclaw"
+  local config_file="${config_dir}/openclaw.json"
+  mkdir -p "${config_dir}"
+
+  local relay_base="http://127.0.0.1:${OLLAMA_RELAY_PORT}"
+
+  # The vision model is an Ollama model running on the host; pull it first
+  # (e.g. `ollama pull llava`). Override with --env 'OPENCLAW_VISION_MODEL=...'.
+  local vision_model="${OPENCLAW_VISION_MODEL:-llava}"
+
+  # Web search defaults to the Ollama provider so it rides the existing relay
+  # (host Ollama forwards to Ollama Cloud; needs `ollama signin` on the host).
+  # Override with --env 'OPENCLAW_WEB_SEARCH_PROVIDER=duckduckgo' for a keyless
+  # provider that reaches the public internet directly from the sandbox.
+  local web_search_provider="${OPENCLAW_WEB_SEARCH_PROVIDER:-ollama}"
+
+  # Telegram bot channel — only enabled when a bot token is provided. OpenClaw
+  # reads TELEGRAM_BOT_TOKEN as the default-account fallback, so we enable the
+  # channel here and let the token resolve from the environment. The bot polls
+  # api.telegram.org, so the sandbox needs outbound internet to that host.
+  local telegram_json=""
+  if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+    local tg='"enabled": true'
+    tg="${tg}, \"dmPolicy\": \"${TELEGRAM_DM_POLICY:-pairing}\""
+    if [ -n "${TELEGRAM_ALLOW_FROM:-}" ]; then
+      tg="${tg}, \"allowFrom\": $(csv_to_json_array "${TELEGRAM_ALLOW_FROM}")"
+    fi
+    tg="${tg}, \"groupPolicy\": \"${TELEGRAM_GROUP_POLICY:-allowlist}\""
+    if [ -n "${TELEGRAM_GROUP_ALLOW_FROM:-}" ]; then
+      tg="${tg}, \"groupAllowFrom\": $(csv_to_json_array "${TELEGRAM_GROUP_ALLOW_FROM}")"
+    fi
+    telegram_json="\"telegram\": { ${tg} }"
+    log_info "Telegram channel enabled (dmPolicy=${TELEGRAM_DM_POLICY:-pairing}, groupPolicy=${TELEGRAM_GROUP_POLICY:-allowlist})"
+  fi
+
+  cat > "${config_file}" <<EOF
+{
+  "agents": {
+    "defaults": {
+      "model": { "primary": "ollama/${CLOMA_MODEL}" }
+    }
+  },
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "${relay_base}",
+        "apiKey": "ollama-local",
+        "api": "ollama",
+        "models": [
+          { "id": "${CLOMA_MODEL}", "name": "Ollama (${CLOMA_MODEL})", "contextWindow": 262144 },
+          { "id": "${vision_model}", "name": "Ollama vision (${vision_model})", "contextWindow": 8192 }
+        ]
+      }
+    }
+  },
+  "channels": { ${telegram_json} },
+  "mcp": {
+    "servers": {}
+  },
+  "tools": {
+    "profile": "coding",
+    "updatePlan": true,
+    "codeMode": { "enabled": true },
+    "loopDetection": { "enabled": true },
+    "sessions": { "visibility": "tree" },
+    "sessions_spawn": { "attachments": true },
+    "exec": {
+      "timeoutSeconds": 1800,
+      "notifyOnExit": true,
+      "commandHighlighting": true,
+      "applyPatch": { "enabled": true }
+    },
+    "web": {
+      "search": { "enabled": true, "provider": "${web_search_provider}" },
+      "fetch": { "enabled": true }
+    },
+    "media": {
+      "image": { "enabled": true, "preferredModel": "ollama/${vision_model}" },
+      "models": [
+        { "provider": "ollama", "model": "${vision_model}", "capabilities": ["image"] }
+      ]
+    }
+  }
+}
+EOF
+
+  log_info "Wrote openclaw config to ${config_file} (baseUrl=${relay_base}, vision=${vision_model}, webSearch=${web_search_provider})"
+}
+
+# csv_to_json_array turns a comma-separated list into a JSON array of strings,
+# e.g. "123, 456" -> ["123","456"]. Empty entries are skipped.
+csv_to_json_array() {
+  local csv="$1" out="[" first=1 item
+  local oldIFS="${IFS}"
+  IFS=','
+  for item in ${csv}; do
+    item="${item## }"; item="${item%% }" # trim surrounding spaces
+    [ -z "${item}" ] && continue
+    if [ "${first}" -eq 1 ]; then first=0; else out="${out}, "; fi
+    out="${out}\"${item}\""
+  done
+  IFS="${oldIFS}"
+  printf '%s]' "${out}"
+}
+
+# Launch OpenClaw.
+launch_openclaw() {
+  # OpenClaw reads providers/models from ~/.openclaw/openclaw.json (written
+  # above). The relay bridges OpenClaw's Node fetch to the host Ollama.
+  start_ollama_relay
+
+  printf '\n'
+
+  # When a Telegram bot token is set, run the OpenClaw gateway — it hosts the
+  # Telegram channel (long-polling api.telegram.org) and the agent, so you chat
+  # with the agent from Telegram instead of the local TUI.
+  if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+    log_info "Launching OpenClaw gateway (Telegram bot) with model: ollama (${CLOMA_MODEL})"
+    if [ -n "${CLOMA_FLAGS}" ]; then
+      exec openclaw gateway run ${CLOMA_FLAGS}
+    else
+      exec openclaw gateway run
+    fi
+  fi
+
+  # Otherwise bare `openclaw` opens the agent TUI against the configured provider.
+  log_info "Launching OpenClaw with model: ollama (${CLOMA_MODEL})"
+  if [ -n "${CLOMA_FLAGS}" ]; then
+    exec openclaw ${CLOMA_FLAGS}
+  else
+    exec openclaw
   fi
 }
 
@@ -405,8 +603,12 @@ main() {
       write_kimi_config
       launch_kimi
       ;;
+    openclaw)
+      write_openclaw_config
+      launch_openclaw
+      ;;
     *)
-      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok' or 'kimi')"
+      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi' or 'openclaw')"
       exit 1
       ;;
   esac

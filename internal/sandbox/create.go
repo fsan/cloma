@@ -104,7 +104,8 @@ if ! command -v curl >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
 fi
 
 # Install the requested agent CLI if not present.
-# CLOMA_AGENT selects which agent to install: "claude" (default), "grok" or "kimi".
+# CLOMA_AGENT selects which agent to install: "claude" (default), "grok",
+# "kimi" or "openclaw".
 CLOMA_AGENT="${CLOMA_AGENT:-claude}"
 case "$CLOMA_AGENT" in
   grok)
@@ -118,6 +119,35 @@ case "$CLOMA_AGENT" in
     fi
     # Kimi's start script runs a small python3 relay to bridge Node fetch to
     # Ollama through cloma's non-tunneling proxy. Ensure python3 is present.
+    if ! command -v python3 >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y --no-install-recommends python3
+      rm -rf /var/lib/apt/lists/*
+    fi
+    ;;
+  openclaw)
+    # OpenClaw is a Node.js application and requires Node.js 22+. The base
+    # sandbox image does not guarantee a new-enough Node, so install it via
+    # NodeSource when missing or older than v22 before running OpenClaw's
+    # installer. The agent's start script also relies on python3 for the
+    # Ollama relay (shared with kimi), so ensure it is present too.
+    need_node=0
+    if ! command -v node >/dev/null 2>&1; then
+      need_node=1
+    else
+      node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+      if [ "${node_major}" -lt 22 ]; then
+        need_node=1
+      fi
+    fi
+    if [ "${need_node}" -eq 1 ]; then
+      curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+      apt-get install -y --no-install-recommends nodejs
+      rm -rf /var/lib/apt/lists/*
+    fi
+    if ! command -v openclaw >/dev/null 2>&1; then
+      curl -fsSL https://openclaw.ai/install.sh | bash
+    fi
     if ! command -v python3 >/dev/null 2>&1; then
       apt-get update
       apt-get install -y --no-install-recommends python3
