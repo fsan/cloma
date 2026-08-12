@@ -209,8 +209,8 @@ permissive, coding-focused toolset:
   sessions/subagents, memory, web, agents and plugin tools.
 - **Web search + web fetch** — see [Web search providers](#web-search-providers)
   below for the provider options, key requirements, and network paths.
-- **Memory + planning + loop safety** — `update_plan`, `memory_search/get`,
-  and `tools.loopDetection` enabled.
+- **Memory + planning + loop safety** — `update_plan` (on by default),
+  `memory_search/get`, and `tools.loopDetection` enabled.
 - **Forced code mode** and **`sessions.visibility: "tree"`** for multi-step
   coding with visible subagents.
 - **Subagent file attachments** (`tools.sessions_spawn.attachments`) so spawned

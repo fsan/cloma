@@ -498,7 +498,6 @@ write_openclaw_config() {
   },
   "tools": {
     "profile": "coding",
-    "updatePlan": true,
     "codeMode": { "enabled": true },
     "loopDetection": { "enabled": true },
     "sessions": { "visibility": "tree" },
@@ -514,7 +513,7 @@ write_openclaw_config() {
       "fetch": { "enabled": true }
     },
     "media": {
-      "image": { "enabled": true, "preferredModel": "ollama/${vision_model}" },
+      "image": { "enabled": true },
       "models": [
         { "provider": "ollama", "model": "${vision_model}", "capabilities": ["image"] }
       ]
