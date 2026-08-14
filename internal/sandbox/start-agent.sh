@@ -235,6 +235,28 @@ launch_grok() {
 OLLAMA_RELAY_PORT="${OLLAMA_RELAY_PORT:-${KIMI_RELAY_PORT:-18999}}"
 OLLAMA_RELAY_UPSTREAM="${OLLAMA_RELAY_UPSTREAM:-${KIMI_RELAY_UPSTREAM:-http://host.docker.internal:11434}}"
 
+# OpenClaw's web search/fetch tools are served by the Gateway. The bare TUI
+# only exposes them when it can connect to a running Gateway; with none
+# reachable it falls back to "local embedded" mode where web tools are
+# unavailable (the "no web browsing/gateway tools enabled" message). cloma
+# starts a loopback-only Gateway in the background before launching the TUI so
+# web search/fetch come online. Auth is token mode with a per-sandbox token
+# (see ensure_openclaw_gateway_token): "none" mode is rejected by the
+# device-pair plugin with "device identity required" even on loopback
+# (openclaw/openclaw#75780), while token auth lets the TUI connect as an
+# authenticated operator without interactive pairing. --allow-unconfigured
+# prevents the Gateway from rewriting the generated config.
+OPENCLAW_GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
+
+# Headless browser env for OpenClaw's browser tool. Chromium was installed to
+# /opt/browsers by Playwright during provisioning. --no-sandbox is required in
+# Docker: Chromium cannot create its setuid/namespace sandbox inside a
+# container (openclaw/openclaw#29879). Headless is forced because the sandbox
+# has no display. These are openclaw-specific; other agents ignore them.
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/opt/browsers}"
+export OPENCLAW_BROWSER_NO_SANDBOX="${OPENCLAW_BROWSER_NO_SANDBOX:-1}"
+export OPENCLAW_BROWSER_HEADLESS="${OPENCLAW_BROWSER_HEADLESS:-1}"
+
 # Start the local Ollama relay (idempotent — reuses one already listening).
 start_ollama_relay() {
   if ! command -v python3 >/dev/null 2>&1; then
@@ -308,6 +330,64 @@ PYEOF
   done
   log_error "Ollama relay failed to start (see /tmp/ollama-relay.log)"
   exit 1
+}
+
+# Provide a stable per-sandbox token for the loopback gateway. Generated once,
+# persisted to ~/.openclaw/gateway-token, and reused across launches so a
+# still-running gateway (from a previous launch) and a freshly launched TUI
+# present the same token. Exported as OPENCLAW_GATEWAY_TOKEN so the gateway
+# server and the TUI client both see it; also written into openclaw.json under
+# gateway.auth so config-driven clients resolve the same secret.
+ensure_openclaw_gateway_token() {
+  local token_file="${HOME}/.openclaw/gateway-token"
+  if [ -s "${token_file}" ]; then
+    OPENCLAW_GATEWAY_TOKEN="$(cat "${token_file}" 2>/dev/null)"
+  fi
+  if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+    OPENCLAW_GATEWAY_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-32)"
+    mkdir -p "$(dirname "${token_file}")"
+    printf '%s' "${OPENCLAW_GATEWAY_TOKEN}" > "${token_file}"
+    chmod 600 "${token_file}"
+  fi
+  export OPENCLAW_GATEWAY_TOKEN
+}
+
+# Start the OpenClaw Gateway on loopback (idempotent — reuses one already
+# listening). The Gateway provides web search/fetch and other gateway tools to
+# the TUI; without it the TUI runs in local-embedded mode with no web tools.
+# Detached so it survives `exec` of the TUI; dies when the sandbox stops.
+# Non-fatal: if it cannot bind, the TUI still launches in local-embedded mode
+# (just without web tools) so the agent remains usable.
+start_openclaw_gateway() {
+  # A stable token is required: the TUI (this shell) and a possibly already
+  # running gateway (from a previous launch) must present the same token.
+  ensure_openclaw_gateway_token
+
+  # Reuse a gateway that is already listening (e.g. from a previous launch).
+  if curl -s --noproxy '*' --max-time 1 \
+      "http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}/" >/dev/null 2>&1; then
+    log_info "OpenClaw gateway already running on 127.0.0.1:${OPENCLAW_GATEWAY_PORT}"
+    return 0
+  fi
+
+  log_info "Starting OpenClaw gateway on 127.0.0.1:${OPENCLAW_GATEWAY_PORT}..."
+
+  setsid openclaw gateway \
+      --allow-unconfigured --auth token --bind loopback \
+      --port "${OPENCLAW_GATEWAY_PORT}" \
+    >/tmp/openclaw-gateway.log 2>&1 </dev/null &
+
+  local i
+  for i in $(seq 1 50); do
+    if curl -s --noproxy '*' --max-time 1 \
+        "http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}/" >/dev/null 2>&1; then
+      log_info "OpenClaw gateway listening on 127.0.0.1:${OPENCLAW_GATEWAY_PORT}"
+      return 0
+    fi
+    sleep 0.2
+  done
+  log_warn "OpenClaw gateway did not become reachable (see /tmp/openclaw-gateway.log); web tools may be unavailable"
+  return 0
 }
 
 # Write Kimi Code's config so it targets the local relay (which forwards to
@@ -413,15 +493,30 @@ launch_kimi() {
 # The agent runs inside an isolated sandbox, so the toolset is configured
 # permissively for a coding agent: the "coding" profile (fs, shell, sessions,
 # memory, web, agents, media, plugins), web search + web fetch, memory +
-# planning, tool-loop safety, forced code mode, subagent session visibility,
-# subagent file attachments, shell/exec tuning, image understanding via an
-# Ollama vision model, an empty MCP server map ready for user-defined servers,
-# and an optional Telegram bot channel.
+# planning, tool-loop safety, codeMode disabled (direct tool exposure — the
+# agent sees the real shell exec, browser, and web_search tools directly,
+# instead of code mode's QuickJS JS sandbox which hides the full catalog behind
+# a JS bridge that small/local models can't drive; this OpenClaw build's schema
+# only accepts a boolean, so "auto" is not available here), subagent session
+# visibility, subagent file attachments, shell/exec with full
+# approval mode + gateway host (so the agent can install dependencies and write
+# code without an approval gate), a headless Chromium for the browser tool
+# (installed by Playwright during provisioning, --no-sandbox for Docker), image
+# understanding via an Ollama vision model, an empty MCP server map ready for
+# user-defined servers, and an optional Telegram bot channel.
 #
 # Environment overrides (pass via cloma --env):
+#   OPENCLAW_CODE_MODE           1 enables code mode (JS-sandbox tool orchestration)
+#                               for capable models; default 0 = direct tools, which
+#                               is what small/local Ollama models need.
 #   OPENCLAW_VISION_MODEL        Ollama vision model for images (default: llava).
 #   OPENCLAW_WEB_SEARCH_PROVIDER web search provider (default: ollama, which
 #                               reuses the relay; try duckduckgo for keyless).
+#   OPENCLAW_BROWSER_HEADLESS    Force headless off with 0 (default 1; the
+#                               sandbox has no display).
+#   OPENCLAW_BROWSER_NO_SANDBOX  1 (default) adds --no-sandbox to Chromium,
+#                               required in Docker; set 0 only with privileges.
+#   PLAYWRIGHT_BROWSERS_PATH      Where Chromium lives (default /opt/browsers).
 #   TELEGRAM_BOT_TOKEN           Telegram bot token from @BotFather. When set,
 #                               the Telegram channel is enabled and cloma
 #                               launches the OpenClaw gateway (which hosts the
@@ -441,6 +536,10 @@ write_openclaw_config() {
   local config_file="${config_dir}/openclaw.json"
   mkdir -p "${config_dir}"
 
+  # Resolve the loopback gateway token before writing config so it can be
+  # embedded in gateway.auth below (shared by the gateway server and the TUI).
+  ensure_openclaw_gateway_token
+
   local relay_base="http://127.0.0.1:${OLLAMA_RELAY_PORT}"
 
   # The vision model is an Ollama model running on the host; pull it first
@@ -452,6 +551,22 @@ write_openclaw_config() {
   # Override with --env 'OPENCLAW_WEB_SEARCH_PROVIDER=duckduckgo' for a keyless
   # provider that reaches the public internet directly from the sandbox.
   local web_search_provider="${OPENCLAW_WEB_SEARCH_PROVIDER:-ollama}"
+
+  # Code mode (tools.codeMode) hides the full tool catalog behind a QuickJS JS
+  # sandbox: the agent only gets a JS `exec` + `wait` and must drive the real
+  # tools (shell, browser, web) through a tools.search()/tools.call() bridge.
+  # It's a token-saving optimization for "preferred" models (Claude/GPT/Gemini
+  # tier) that reliably write that JS, but it traps small/local Ollama models
+  # that can't — they lose direct shell/browser/web access (the "I can only run
+  # JS / can't install deps" failure). This OpenClaw build's schema only accepts
+  # a boolean (no "auto" per-model switch), so cloma defaults it OFF (direct
+  # tools work for every model). Override with --env 'OPENCLAW_CODE_MODE=1' when
+  # running a capable model that benefits from code mode.
+  local code_mode="false"
+  case "${OPENCLAW_CODE_MODE:-0}" in
+    1|true|TRUE|True|yes) code_mode="true" ;;
+    *) code_mode="false" ;;
+  esac
 
   # Telegram bot channel — only enabled when a bot token is provided. OpenClaw
   # reads TELEGRAM_BOT_TOKEN as the default-account fallback, so we enable the
@@ -472,6 +587,30 @@ write_openclaw_config() {
     log_info "Telegram channel enabled (dmPolicy=${TELEGRAM_DM_POLICY:-pairing}, groupPolicy=${TELEGRAM_GROUP_POLICY:-allowlist})"
   fi
 
+  # Locate the headless Chromium installed by Playwright during provisioning
+  # (arm64-safe, unlike the amd64-only google-chrome .deb). Fall back to any
+  # system Chrome/Chromium. When a binary is found, pin it via executablePath
+  # so OpenClaw's browser plugin launches headless with --no-sandbox (required
+  # in Docker). noSandbox/headless are set unconditionally below.
+  local browser_path=""
+  local p
+  for p in /opt/browsers/chromium-*/chrome-linux/chrome \
+           /opt/browsers/chromium-*/chrome-linux/headless_shell; do
+    if [ -x "$p" ]; then browser_path="$p"; break; fi
+  done
+  if [ -z "${browser_path}" ]; then
+    for p in /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
+      if [ -x "$p" ]; then browser_path="$p"; break; fi
+    done
+  fi
+  local browser_json='"enabled": true, "headless": true, "noSandbox": true'
+  if [ -n "${browser_path}" ]; then
+    browser_json="${browser_json}, \"executablePath\": \"${browser_path}\""
+    log_info "Browser: ${browser_path}"
+  else
+    log_warn "No Chromium found; browser tool will try to auto-install on first use (slow) or fail"
+  fi
+
   cat > "${config_file}" <<EOF
 {
   "agents": {
@@ -486,8 +625,8 @@ write_openclaw_config() {
         "apiKey": "ollama-local",
         "api": "ollama",
         "models": [
-          { "id": "${CLOMA_MODEL}", "name": "Ollama (${CLOMA_MODEL})", "contextWindow": 262144 },
-          { "id": "${vision_model}", "name": "Ollama vision (${vision_model})", "contextWindow": 8192 }
+          { "id": "${CLOMA_MODEL}", "name": "Ollama (${CLOMA_MODEL})", "contextWindow": 262144, "params": { "num_ctx": 262144 } },
+          { "id": "${vision_model}", "name": "Ollama vision (${vision_model})", "contextWindow": 8192, "params": { "num_ctx": 8192 } }
         ]
       }
     }
@@ -496,14 +635,27 @@ write_openclaw_config() {
   "mcp": {
     "servers": {}
   },
+  "gateway": {
+    "auth": { "mode": "token", "token": "${OPENCLAW_GATEWAY_TOKEN}" }
+  },
+  "browser": { ${browser_json} },
   "tools": {
     "profile": "coding",
-    "codeMode": { "enabled": true },
+    "codeMode": { "enabled": ${code_mode} },
     "loopDetection": { "enabled": true },
     "sessions": { "visibility": "tree" },
-    "sessions_spawn": { "attachments": true },
+    "sessions_spawn": {
+      "attachments": {
+        "enabled": true,
+        "maxTotalBytes": 5242880,
+        "maxFiles": 50,
+        "maxFileBytes": 1048576
+      }
+    },
     "exec": {
-      "timeoutSeconds": 1800,
+      "mode": "full",
+      "host": "gateway",
+      "timeoutSec": 1800,
       "notifyOnExit": true,
       "commandHighlighting": true,
       "applyPatch": { "enabled": true }
@@ -542,10 +694,78 @@ csv_to_json_array() {
 }
 
 # Launch OpenClaw.
+# ensure_openclaw_bootstrap writes OpenClaw's persona bootstrap file (SOUL.md)
+# into the workspace before launch. OpenClaw loads workspace bootstrap files
+# (SOUL.md/USER.md/IDENTITY.md/HEARTBEAT.md) into the agent's context at startup
+# (controlled by agents.defaults.contextInjection). By default OpenClaw creates
+# these if missing, so writing SOUL.md first makes the agent load our directive
+# instead of an auto-generated one. This is the supported, schema-stable way to
+# steer the agent's answer style without guessing config keys (which the schema
+# rejects, e.g. there is no agents.defaults.instructions/systemPrompt field and
+# promptOverlays is GPT-5-only). Set OPENCLAW_NO_BOOTSTRAP=1 to skip; an existing
+# SOUL.md is left untouched so user-authored personas win.
+ensure_openclaw_bootstrap() {
+  case "${OPENCLAW_NO_BOOTSTRAP:-0}" in
+    1|true|TRUE|True|yes) return 0 ;;
+  esac
+  local soul="SOUL.md"
+  if [ -s "${soul}" ]; then
+    log_info "Existing ${soul} found; leaving it in place"
+    return 0
+  fi
+  log_info "Writing ${soul} (answer-style directive) into workspace"
+  cat > "${soul}" <<'SOUL'
+# Soul
+
+You are an autonomous coding agent running in an isolated sandbox. You have
+real tools: a shell (exec), a headless browser, and web search/fetch. You can
+install dependencies — pip, apt-get and npm all work; plain `pip install <pkg>`
+is fine. `python` is available (alias of python3). You have passwordless sudo.
+
+## Autonomy — important
+- Complete the task by whatever means necessary. Make decisions, pick tools,
+  install software, write/run/edit files, browse, and search without asking
+  for permission at each step.
+- Do not stop to ask "should I?" for ordinary work. Proceed and get it done.
+- Do not stop until the goal is fully achieved. If one approach fails, rethink
+  the problem and try a different approach — keep going. After each reply, if
+  the goal is not yet complete, continue working toward it in the same turn
+  instead of stopping and waiting for the user. Only stop when the goal is
+  done, or when you hit a genuine hard blocker (safety, or a credential /
+  permission you cannot obtain yourself).
+- Only stop and ask the user when an action is genuinely dangerous or unsafe:
+  destroying data, irreversible deletions outside your task scope, exposing
+  secrets/credentials, or anything that could break the environment. When in
+  doubt about safety (not difficulty), pause and ask — difficulty is never a
+  reason to stop.
+- Never hand a task back to the user. Do NOT say "you can check ...", "I
+  recommend you visit ...", or "would you like me to fetch/browse ...?" — if a
+  tool (web fetch, browser, exec) can do it, USE the tool and report the
+  result. Asking "would you like me to...?" is always wrong: just do it. Only
+  ask the user when you need a decision or a credential you cannot obtain
+  yourself.
+- If a path is blocked, find another way yourself; only report a hard blocker
+  after you have genuinely tried alternatives.
+
+## Answer style — important
+- Answer the user's question directly and concisely. Lead with the result.
+- If you ran code or a shell command, put the actual output/result as the
+  FIRST line of your reply.
+- Do NOT open with "Done. Here's what happened:" or a numbered recap of steps.
+- Do not send progress narration as separate messages ("I'll install...",
+  "Now running the script:"). Do the work silently, then reply with the
+  answer.
+- Only recap the steps you took if the user explicitly asks.
+- No filler, no apologies, no "I'm sorry, I cannot...". If something failed,
+  say the error and the fix in one line.
+SOUL
+}
+
 launch_openclaw() {
   # OpenClaw reads providers/models from ~/.openclaw/openclaw.json (written
   # above). The relay bridges OpenClaw's Node fetch to the host Ollama.
   start_ollama_relay
+  ensure_openclaw_bootstrap
 
   printf '\n'
 
@@ -561,7 +781,12 @@ launch_openclaw() {
     fi
   fi
 
-  # Otherwise bare `openclaw` opens the agent TUI against the configured provider.
+  # Otherwise bare `openclaw` opens the agent TUI against the configured
+  # provider. Start a loopback Gateway first so the TUI connects to it and
+  # web search/fetch (gateway tools) are available; without a Gateway the TUI
+  # runs in local-embedded mode with no web tools.
+  start_openclaw_gateway
+
   log_info "Launching OpenClaw with model: ollama (${CLOMA_MODEL})"
   if [ -n "${CLOMA_FLAGS}" ]; then
     exec openclaw ${CLOMA_FLAGS}

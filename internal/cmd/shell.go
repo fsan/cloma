@@ -40,28 +40,48 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize config: %w", err)
 	}
 
-	// Resolve workspace
-	workspacePath := shellWorkspace
-	if workspacePath == "" {
-		workspacePath = "."
-	}
-
-	resolvedWorkspace, err := workspace.Resolve(workspacePath)
-	if err != nil {
-		return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
-	}
-
-	// Generate sandbox name: use the user-supplied label (--name) when given,
-	// otherwise derive it from the workspace path. If the path-derived name
-	// has no registry entry, fall back to searching the registry for a
-	// sandbox created with --name from this workspace.
+	// Resolve the sandbox name and its workspace together. When --name is
+	// given without --workspace, the workspace is looked up from the
+	// registry (recorded at sandbox creation) so the shell opens in the
+	// right directory regardless of the caller's current working directory.
+	// This matters for --tempfs runs, whose workspace is a host tmpfs path
+	// the caller is not sitting in; without this, the shell defaults to cwd
+	// and the exec fails to chdir into a path that doesn't exist in the sandbox.
 	var sandboxName string
+	var resolvedWorkspace string
+	var err error
+
 	if shellName != "" {
 		sandboxName, err = workspace.ResolveSandboxName(shellName)
 		if err != nil {
 			return fmt.Errorf("invalid sandbox name %q: %w", shellName, err)
 		}
+		if shellWorkspace != "" {
+			resolvedWorkspace, err = workspace.Resolve(shellWorkspace)
+			if err != nil {
+				return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, shellWorkspace)
+			}
+		} else if stored, serr := sandbox.GetStoredWorkspace(sandboxName); serr == nil && stored != "" {
+			// Use the workspace recorded when the sandbox was created.
+			resolvedWorkspace = stored
+		} else {
+			resolvedWorkspace, err = workspace.Resolve(".")
+			if err != nil {
+				return fmt.Errorf("failed to resolve workspace: %w", err)
+			}
+		}
 	} else {
+		workspacePath := shellWorkspace
+		if workspacePath == "" {
+			workspacePath = "."
+		}
+		resolvedWorkspace, err = workspace.Resolve(workspacePath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve workspace: %w\nHint: Ensure the path exists: %s", err, workspacePath)
+		}
+		// Generate sandbox name from the workspace path. If the path-derived
+		// name has no registry entry, fall back to searching the registry for
+		// a sandbox created with --name from this workspace.
 		sandboxName = workspace.SandboxName(resolvedWorkspace)
 		if stored, _ := sandbox.GetStoredWorkspace(sandboxName); stored == "" {
 			if found, _ := sandbox.FindByWorkspace(resolvedWorkspace); found != "" {

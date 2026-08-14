@@ -153,6 +153,31 @@ case "$CLOMA_AGENT" in
       apt-get install -y --no-install-recommends python3
       rm -rf /var/lib/apt/lists/*
     fi
+    # Make Python usable for a coding agent: provide a "python" command,
+    # ensure pip + venv are present, and disable PEP 668's
+    # "externally-managed-environment" guard so the agent can run plain
+    # "pip install <pkg>". This sandbox is ephemeral and the agent is expected
+    # to install the dependencies it needs; the Debian guard that blocks
+    # global pip installs is counterproductive here. Removing the
+    # EXTERNALLY-MANAGED marker avoids needing --break-system-packages on
+    # every call (which a small model will forget to pass).
+    apt-get update
+    apt-get install -y --no-install-recommends python3-pip python3-venv
+    rm -rf /var/lib/apt/lists/*
+    ln -sf "$(command -v python3)" /usr/local/bin/python
+    rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+    # Install a headless Chromium for OpenClaw's browser tool. The sandbox is
+    # arm64 (Apple Silicon host), so the amd64-only google-chrome .deb won't
+    # work; Playwright's bundled Chromium ships for both arm64 and x86_64 and
+    # is the same method the official OpenClaw Docker image uses
+    # (openclaw/openclaw#18449). --with-deps pulls the system libs Chromium
+    # needs via apt (provisioning runs as root). Browsers install to a shared
+    # path made world-readable so the agent user (uid 1000) can use them at
+    # runtime; start-agent.sh points OpenClaw at the binary via executablePath.
+    if ! ls /opt/browsers/chromium-*/chrome-linux/chrome >/dev/null 2>&1; then
+      PLAYWRIGHT_BROWSERS_PATH=/opt/browsers npx --yes playwright install --with-deps chromium || true
+      chmod -R a+rX /opt/browsers 2>/dev/null || true
+    fi
     ;;
   claude|*)
     if ! command -v claude >/dev/null 2>&1; then
