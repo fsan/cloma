@@ -93,6 +93,9 @@ cloma list
 
 # Run health checks
 cloma doctor
+
+# Update to the latest release
+cloma update
 ```
 
 ## Commands
@@ -487,6 +490,31 @@ cloma version
 
 # JSON output
 cloma version --json
+```
+
+### `cloma update`
+
+Update cloma to the latest tagged release. Discovers the latest `vX.Y.Z` tag
+from the upstream repository, downloads the source, builds it, and installs
+the binary to `/usr/local/bin`. Installing there usually requires root, so the
+install step is run with `sudo` automatically when `/usr/local/bin` is not
+writable by the current user.
+
+```bash
+# Update to the latest release
+cloma update
+
+# Only report the latest available tag without installing
+cloma update --check
+
+# Install a specific tag instead of the latest
+cloma update --version v0.1.0
+
+# Reinstall even when already up to date (or running a dev build)
+cloma update --force
+
+# Use a different repository (e.g. a fork)
+cloma update --repo https://github.com/yourname/cloma.git
 ```
 
 ## Global Flags
