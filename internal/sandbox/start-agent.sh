@@ -2,12 +2,14 @@
 # Entry point script for code agents in Docker sandbox.
 #
 # This script is copied into the sandbox and executed to start a code agent.
-# It supports four agents, selected via the CLOMA_AGENT environment variable:
+# It supports five agents, selected via the CLOMA_AGENT environment variable:
 #
 #   - claude (default): Claude Code, driven by the Anthropic Messages API.
 #   - grok:             Grok Build, driven by an OpenAI-compatible endpoint.
 #   - kimi:             Kimi Code, driven by an OpenAI-compatible endpoint.
 #   - openclaw:         OpenClaw, driven by Ollama's native API.
+#   - junie:            Junie CLI (JetBrains), driven by an OpenAI-compatible
+#                       endpoint via a custom model profile.
 #
 # All agents are pointed at an Ollama instance running on the host. Ollama is
 # verified with its native API, then the selected agent is launched with a
@@ -24,8 +26,8 @@ WORKSPACE="${WORKSPACE:-$PWD}"
 
 # Make sure the per-user agent install locations are on PATH
 # (grok installs to ~/.grok/bin, kimi installs to ~/.kimi-code/bin,
-# openclaw installs to ~/.openclaw/bin).
-export PATH="${HOME}/.openclaw/bin:${HOME}/.kimi-code/bin:${HOME}/.grok/bin:${HOME}/.local/bin:${PATH}"
+# openclaw installs to ~/.openclaw/bin, junie installs to ~/.junie/bin).
+export PATH="${HOME}/.junie/bin:${HOME}/.openclaw/bin:${HOME}/.kimi-code/bin:${HOME}/.grok/bin:${HOME}/.local/bin:${PATH}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -87,6 +89,7 @@ print_info() {
     grok)     agent_name="Grok Build" ;;
     kimi)     agent_name="Kimi Code" ;;
     openclaw) agent_name="OpenClaw" ;;
+    junie)    agent_name="Junie CLI" ;;
     claude)   agent_name="Claude Code" ;;
     *)        agent_name="${CLOMA_AGENT}" ;;
   esac
@@ -156,8 +159,18 @@ ensure_agent_installed() {
       log_info "Installing OpenClaw..."
       curl -fsSL https://openclaw.ai/install.sh | bash
       ;;
+    junie)
+      if command -v junie >/dev/null 2>&1; then
+        return 0
+      fi
+      # Custom model profiles (needed to target a local Ollama) require the
+      # Early Access Program build, so install the EAP channel rather than
+      # the stable one.
+      log_info "Installing Junie CLI (EAP)..."
+      curl -fsSL https://junie.jetbrains.com/install-eap.sh | bash
+      ;;
     *)
-      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi' or 'openclaw')"
+      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi', 'openclaw' or 'junie')"
       exit 1
       ;;
   esac
@@ -413,7 +426,7 @@ write_kimi_config() {
   # [models."<tag>"] entry so kimi can resolve it for subagent spawning.
   local secondary_model="ollama"
 
-  if [ -n "${KIMI_SECONDARY_MODEL}" ]; then
+  if [ -n "${KIMI_SECONDARY_MODEL:-}" ]; then
     # Verify the secondary model is available in Ollama before registering it.
     if curl -fsS -o /dev/null "${CLOMA_OLLAMA_URL}/api/show" \
         -d "{\"model\":\"${KIMI_SECONDARY_MODEL}\"}" 2>/dev/null; then
@@ -448,7 +461,7 @@ EOF
   # When a custom secondary model is requested, append a [models."<tag>"]
   # entry pointing at the same Ollama provider. Quoted keys are needed
   # because model tags contain dots (e.g. "kimi-k2.7-code:cloud").
-  if [ -n "${KIMI_SECONDARY_MODEL}" ]; then
+  if [ -n "${KIMI_SECONDARY_MODEL:-}" ]; then
     cat >> "${config_file}" <<EOF
 
 [models."${KIMI_SECONDARY_MODEL}"]
@@ -795,6 +808,85 @@ launch_openclaw() {
   fi
 }
 
+# Write Junie CLI's custom model profile so it targets the local relay (which
+# forwards to the host Ollama using the OpenAI-compatible /v1/chat/completions
+# endpoint). The profile lives at ~/.junie/models/ollama.json and is selected
+# with `junie --model custom:ollama`. Custom model profiles require the Junie
+# EAP build (installed during provisioning).
+#
+# Junie has no documented flag/env var for a custom OpenAI-compatible base URL,
+# so a custom model profile is the only way to point it at a local Ollama
+# instance. A dummy API key ("ollama") satisfies the credential field — Ollama
+# ignores it. Use OpenAICompletion (chat completions) rather than
+# OpenAIResponses, which community reports show is more reliable with Ollama.
+#
+# Environment overrides (pass via cloma --env):
+#   JUNIE_FASTER_MODEL   Optional lighter Ollama model for quick tasks
+#                        (summarization, autocomplete). When set and available
+#                        in Ollama, it is registered as the profile's
+#                        fasterModel; otherwise it is omitted.
+#   JUNIE_TEMPERATURE    Sampling temperature (default: 0.3).
+write_junie_config() {
+  local models_dir="${HOME}/.junie/models"
+  local profile_file="${models_dir}/ollama.json"
+  mkdir -p "${models_dir}"
+
+  local relay_base="http://127.0.0.1:${OLLAMA_RELAY_PORT}"
+
+  local temperature="${JUNIE_TEMPERATURE:-0.3}"
+
+  # Optional faster model for quick tasks. Verify it exists in Ollama before
+  # registering it, mirroring the KIMI_SECONDARY_MODEL handling.
+  local faster_block=""
+  if [ -n "${JUNIE_FASTER_MODEL:-}" ]; then
+    if curl -fsS -o /dev/null "${CLOMA_OLLAMA_URL}/api/show" \
+        -d "{\"model\":\"${JUNIE_FASTER_MODEL}\"}" 2>/dev/null; then
+      log_info "Faster model ${JUNIE_FASTER_MODEL} is available"
+      faster_block=$(printf ',\n  "fasterModel": {\n    "id": "%s",\n    "temperature": %s\n  }' \
+        "${JUNIE_FASTER_MODEL}" "${temperature}")
+    else
+      log_error "Faster model ${JUNIE_FASTER_MODEL} not found in Ollama"
+      log_error "Pull it first: ollama pull ${JUNIE_FASTER_MODEL}"
+      exit 1
+    fi
+  fi
+
+  cat > "${profile_file}" <<EOF
+{
+  "id": "ollama",
+  "baseUrl": "${relay_base}/v1/chat/completions",
+  "apiType": "OpenAICompletion",
+  "apiKey": "ollama",
+  "primaryModel": {
+    "id": "${CLOMA_MODEL}",
+    "temperature": ${temperature}
+  }${faster_block}
+}
+EOF
+
+  log_info "Wrote junie model profile to ${profile_file} (baseUrl=${relay_base}/v1/chat/completions)"
+}
+
+# Launch Junie CLI.
+launch_junie() {
+  # Junie reads custom model profiles from ~/.junie/models/*.json (written
+  # above). The relay bridges Junie's HTTP client to the host Ollama, mirroring
+  # the kimi/openclaw setup.
+  start_ollama_relay
+
+  log_info "Launching Junie CLI with model: custom:ollama (${CLOMA_MODEL})"
+  printf '\n'
+
+  # `--model custom:ollama` selects the custom profile written by
+  # write_junie_config; `--skip-update-check` avoids an outbound update probe.
+  local junie_args=(--model custom:ollama --skip-update-check)
+  if [ -n "${CLOMA_FLAGS}" ]; then
+    # shellcheck disable=SC2086
+    junie_args+=( ${CLOMA_FLAGS} )
+  fi
+  exec junie "${junie_args[@]}"
+}
+
 # Main entry point
 main() {
   print_info
@@ -831,8 +923,12 @@ main() {
       write_openclaw_config
       launch_openclaw
       ;;
+    junie)
+      write_junie_config
+      launch_junie
+      ;;
     *)
-      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi' or 'openclaw')"
+      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi', 'openclaw' or 'junie')"
       exit 1
       ;;
   esac

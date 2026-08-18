@@ -105,7 +105,7 @@ fi
 
 # Install the requested agent CLI if not present.
 # CLOMA_AGENT selects which agent to install: "claude" (default), "grok",
-# "kimi" or "openclaw".
+# "kimi", "openclaw" or "junie".
 CLOMA_AGENT="${CLOMA_AGENT:-claude}"
 case "$CLOMA_AGENT" in
   grok)
@@ -177,6 +177,22 @@ case "$CLOMA_AGENT" in
     if ! ls /opt/browsers/chromium-*/chrome-linux/chrome >/dev/null 2>&1; then
       PLAYWRIGHT_BROWSERS_PATH=/opt/browsers npx --yes playwright install --with-deps chromium || true
       chmod -R a+rX /opt/browsers 2>/dev/null || true
+    fi
+    ;;
+  junie)
+    # Junie CLI (JetBrains). Custom model profiles — needed to point Junie at
+    # a local Ollama instance via an OpenAI-compatible endpoint — require the
+    # Early Access Program (EAP) build, so install that instead of the stable
+    # channel. The agent's start script runs the shared python3 Ollama relay
+    # (same as kimi/openclaw) to bridge Junie's HTTP client to the host Ollama
+    # through cloma's non-tunneling proxy, so ensure python3 is present.
+    if ! command -v junie >/dev/null 2>&1; then
+      curl -fsSL https://junie.jetbrains.com/install-eap.sh | bash
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y --no-install-recommends python3
+      rm -rf /var/lib/apt/lists/*
     fi
     ;;
   claude|*)

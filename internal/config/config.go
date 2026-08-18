@@ -15,7 +15,8 @@ const (
 	DefaultModel = "glm-5:cloud"
 
 	// DefaultAgent is the default code agent to run inside the sandbox.
-	// Supported values: "claude" (Claude Code), "grok" (Grok Build) and "kimi" (Kimi Code).
+	// Supported values: "claude" (Claude Code), "grok" (Grok Build), "kimi"
+	// (Kimi Code), "openclaw" (OpenClaw) and "junie" (Junie CLI).
 	DefaultAgent = "claude"
 
 	// DefaultOllamaPort is the default port for Ollama.
@@ -39,7 +40,8 @@ type Config struct {
 	// Model is the AI model to use.
 	Model string
 
-	// Agent is the code agent to run inside the sandbox ("claude", "grok" or "kimi").
+	// Agent is the code agent to run inside the sandbox ("claude", "grok",
+	// "kimi", "openclaw" or "junie").
 	Agent string
 
 	// OllamaPort is the port where Ollama is running.
@@ -154,7 +156,8 @@ func GetModel() string {
 	return viper.GetString("model")
 }
 
-// GetAgent returns the configured code agent ("claude", "grok" or "kimi").
+// GetAgent returns the configured code agent ("claude", "grok", "kimi",
+// "openclaw" or "junie").
 func GetAgent() string {
 	return viper.GetString("agent")
 }

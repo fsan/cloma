@@ -125,8 +125,9 @@ cloma -w ~/myproject -m glm-4.7-flash --flags '--verbose'
 
 By default `cloma run` launches **Claude Code** inside the sandbox. Pass
 `--agent grok` to launch **Grok Build** (`grok`), `--agent kimi` to launch
-**Kimi Code** (`kimi`), or `--agent openclaw` to launch **OpenClaw** (`openclaw`)
-instead. All agents are driven by the same Ollama instance running on your host.
+**Kimi Code** (`kimi`), `--agent openclaw` to launch **OpenClaw** (`openclaw`),
+or `--agent junie` to launch **Junie CLI** (`junie`) instead. All agents are
+driven by the same Ollama instance running on your host.
 
 ```bash
 # Launch Grok Build (default model)
@@ -146,6 +147,12 @@ cloma --agent openclaw
 
 # Launch OpenClaw with a specific model and workspace
 cloma --agent openclaw -w ~/myproject -m glm-4.7-flash
+
+# Launch Junie CLI
+cloma --agent junie
+
+# Launch Junie CLI with a specific model and workspace
+cloma --agent junie -w ~/myproject -m glm-4.7-flash
 ```
 
 ### Setting environment variables in the sandbox
@@ -251,6 +258,35 @@ cloma --agent openclaw \
   --env 'OPENCLAW_WEB_SEARCH_PROVIDER=duckduckgo'
 ```
 
+When `--agent junie` is used, cloma installs the **Junie CLI** (JetBrains) —
+specifically the Early Access Program (EAP) build, because pointing Junie at a
+local model requires custom model profiles, an EAP-only feature — and writes a
+custom model profile to `~/.junie/models/ollama.json` inside the sandbox. The
+profile targets the local relay (which forwards to the host Ollama using the
+OpenAI-compatible `/v1/chat/completions` endpoint) and is selected with
+`junie --model custom:ollama`. Junie has no documented flag or environment
+variable for a custom OpenAI-compatible base URL, so a custom model profile is
+the only way to drive it from a local Ollama instance; a dummy API key
+(`ollama`) satisfies the credential field since Ollama ignores it. Like Kimi
+Code and OpenClaw, Junie uses the shared local relay to bridge its HTTP client
+to the host Ollama through the non-tunneling proxy, so `python3` is installed
+during provisioning.
+
+Tune Junie from cloma with `--env` (each `KEY=VALUE`):
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `JUNIE_FASTER_MODEL` | (unset) | Optional lighter Ollama model for quick tasks (summarization, autocomplete); must be pulled on the host |
+| `JUNIE_TEMPERATURE` | `0.3` | Sampling temperature written into the model profile |
+| `OLLAMA_RELAY_PORT` | `18999` | Local relay port (`KIMI_RELAY_PORT` is honored as a legacy fallback) |
+| `OLLAMA_RELAY_UPSTREAM` | `http://host.docker.internal:11434` | Where the relay forwards to |
+
+```bash
+# Junie CLI with a faster sidekick model for quick tasks
+cloma --agent junie \
+  --env 'JUNIE_FASTER_MODEL=qwen2.5-coder:1.5b'
+```
+
 #### Web search providers
 
 Web search is enabled by default with `OPENCLAW_WEB_SEARCH_PROVIDER=ollama`.
@@ -321,7 +357,7 @@ the env var, so it stays out of the on-disk config).
 | `--model` | `-m` | `glm-5:cloud` | AI model to use |
 | `--port` | `-p` | `11434` | Ollama port |
 | `--flags` | `-f` | (empty) | Additional agent flags |
-| `--agent` | | `claude` | Code agent: `claude` (Claude Code), `grok` (Grok Build), `kimi` (Kimi Code) or `openclaw` (OpenClaw) |
+| `--agent` | | `claude` | Code agent: `claude` (Claude Code), `grok` (Grok Build), `kimi` (Kimi Code), `openclaw` (OpenClaw) or `junie` (Junie CLI) |
 | `--name` | `-n` | (auto) | Name this cloma instance (overrides the workspace-derived sandbox name) |
 | `--env` | `-e` | (empty) | Environment variable to set in the sandbox (`KEY=VALUE`); repeatable |
 | `--tempfs` | | off | Use an ephemeral in-memory (tmpfs) workspace on the host instead of the local directory (falls back to a `/tmp` dir on macOS) |
@@ -574,10 +610,13 @@ each agent's section:
   [Tune OpenClaw from cloma](#setting-environment-variables-in-the-sandbox).
 - Kimi: `KIMI_SECONDARY_MODEL`, `OLLAMA_RELAY_PORT`, `OLLAMA_RELAY_UPSTREAM` —
   see [the Kimi section](#setting-environment-variables-in-the-sandbox).
+- Junie: `JUNIE_FASTER_MODEL`, `JUNIE_TEMPERATURE`, `OLLAMA_RELAY_PORT`,
+  `OLLAMA_RELAY_UPSTREAM` — see
+  [the Junie section](#setting-environment-variables-in-the-sandbox).
 
 | Variable | Description |
 |----------|-------------|
-| `CLOMA_AGENT` | Code agent to run: `claude` (default), `grok`, `kimi` or `openclaw` |
+| `CLOMA_AGENT` | Code agent to run: `claude` (default), `grok`, `kimi`, `openclaw` or `junie` |
 | `CLOMA_MODEL` | AI model to use (default: `glm-5:cloud`) |
 | `OLLAMA_PORT` | Host Ollama port (default: `11434`) |
 | `OLLAMA_URL` | Ollama base URL (default: `http://localhost:11434`) |

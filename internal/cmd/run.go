@@ -68,7 +68,7 @@ func addRunFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&runModel, "model", "m", "", "AI model to use (default: glm-5:cloud)")
 	cmd.Flags().IntVarP(&runPort, "port", "p", 0, "Ollama port (default: 11434)")
 	cmd.Flags().StringVarP(&runFlags, "flags", "f", "", "Additional flags to pass to the agent")
-	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default), grok (Grok Build), kimi (Kimi Code) or openclaw (OpenClaw)")
+	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default), grok (Grok Build), kimi (Kimi Code), openclaw (OpenClaw) or junie (Junie CLI)")
 	cmd.Flags().StringVarP(&runName, "name", "n", "", "Name this cloma instance (overrides the workspace-derived sandbox name, enabling multiple instances from the same folder)")
 	// --env can be repeated to inject multiple environment variables into the
 	// sandbox. Each value must be in KEY=VALUE form, e.g. --env 'DEBUG=1'.
@@ -101,7 +101,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	ollamaURL := fmt.Sprintf("http://localhost:%d", ollamaPort)
 
 	// Resolve the code agent (claude by default, grok for Grok Build, kimi for
-	// Kimi Code, openclaw for OpenClaw).
+	// Kimi Code, openclaw for OpenClaw, junie for Junie CLI).
 	agent := runAgent
 	if agent == "" {
 		agent = config.GetAgent()

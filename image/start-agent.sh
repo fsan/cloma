@@ -2,12 +2,14 @@
 # Entry point script for code agents in Docker sandbox.
 #
 # This script is copied into the sandbox and executed to start a code agent.
-# It supports four agents, selected via the CLOMA_AGENT environment variable:
+# It supports five agents, selected via the CLOMA_AGENT environment variable:
 #
 #   - claude (default): Claude Code, driven by the Anthropic Messages API.
 #   - grok:             Grok Build, driven by an OpenAI-compatible endpoint.
 #   - kimi:             Kimi Code, driven by an OpenAI-compatible endpoint.
 #   - openclaw:         OpenClaw, driven by Ollama's native API.
+#   - junie:            Junie CLI (JetBrains), driven by an OpenAI-compatible
+#                       endpoint via a custom model profile.
 #
 # All agents are pointed at an Ollama instance running on the host. Ollama is
 # verified with its native API, then the selected agent is launched with a
@@ -24,8 +26,8 @@ WORKSPACE="${WORKSPACE:-$PWD}"
 
 # Make sure the per-user agent install locations are on PATH
 # (grok installs to ~/.grok/bin, kimi installs to ~/.kimi-code/bin,
-# openclaw installs to ~/.openclaw/bin).
-export PATH="${HOME}/.openclaw/bin:${HOME}/.kimi-code/bin:${HOME}/.grok/bin:${HOME}/.local/bin:${PATH}"
+# openclaw installs to ~/.openclaw/bin, junie installs to ~/.junie/bin).
+export PATH="${HOME}/.junie/bin:${HOME}/.openclaw/bin:${HOME}/.kimi-code/bin:${HOME}/.grok/bin:${HOME}/.local/bin:${PATH}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -87,6 +89,7 @@ print_info() {
     grok)     agent_name="Grok Build" ;;
     kimi)     agent_name="Kimi Code" ;;
     openclaw) agent_name="OpenClaw" ;;
+    junie)    agent_name="Junie CLI" ;;
     claude)   agent_name="Claude Code" ;;
     *)        agent_name="${CLOMA_AGENT}" ;;
   esac
@@ -156,8 +159,18 @@ ensure_agent_installed() {
       log_info "Installing OpenClaw..."
       curl -fsSL https://openclaw.ai/install.sh | bash
       ;;
+    junie)
+      if command -v junie >/dev/null 2>&1; then
+        return 0
+      fi
+      # Custom model profiles (needed to target a local Ollama) require the
+      # Early Access Program build, so install the EAP channel rather than
+      # the stable one.
+      log_info "Installing Junie CLI (EAP)..."
+      curl -fsSL https://junie.jetbrains.com/install-eap.sh | bash
+      ;;
     *)
-      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi' or 'openclaw')"
+      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi', 'openclaw' or 'junie')"
       exit 1
       ;;
   esac
@@ -235,6 +248,28 @@ launch_grok() {
 OLLAMA_RELAY_PORT="${OLLAMA_RELAY_PORT:-${KIMI_RELAY_PORT:-18999}}"
 OLLAMA_RELAY_UPSTREAM="${OLLAMA_RELAY_UPSTREAM:-${KIMI_RELAY_UPSTREAM:-http://host.docker.internal:11434}}"
 
+# OpenClaw's web search/fetch tools are served by the Gateway. The bare TUI
+# only exposes them when it can connect to a running Gateway; with none
+# reachable it falls back to "local embedded" mode where web tools are
+# unavailable (the "no web browsing/gateway tools enabled" message). cloma
+# starts a loopback-only Gateway in the background before launching the TUI so
+# web search/fetch come online. Auth is token mode with a per-sandbox token
+# (see ensure_openclaw_gateway_token): "none" mode is rejected by the
+# device-pair plugin with "device identity required" even on loopback
+# (openclaw/openclaw#75780), while token auth lets the TUI connect as an
+# authenticated operator without interactive pairing. --allow-unconfigured
+# prevents the Gateway from rewriting the generated config.
+OPENCLAW_GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
+
+# Headless browser env for OpenClaw's browser tool. Chromium was installed to
+# /opt/browsers by Playwright during provisioning. --no-sandbox is required in
+# Docker: Chromium cannot create its setuid/namespace sandbox inside a
+# container (openclaw/openclaw#29879). Headless is forced because the sandbox
+# has no display. These are openclaw-specific; other agents ignore them.
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/opt/browsers}"
+export OPENCLAW_BROWSER_NO_SANDBOX="${OPENCLAW_BROWSER_NO_SANDBOX:-1}"
+export OPENCLAW_BROWSER_HEADLESS="${OPENCLAW_BROWSER_HEADLESS:-1}"
+
 # Start the local Ollama relay (idempotent — reuses one already listening).
 start_ollama_relay() {
   if ! command -v python3 >/dev/null 2>&1; then
@@ -310,6 +345,64 @@ PYEOF
   exit 1
 }
 
+# Provide a stable per-sandbox token for the loopback gateway. Generated once,
+# persisted to ~/.openclaw/gateway-token, and reused across launches so a
+# still-running gateway (from a previous launch) and a freshly launched TUI
+# present the same token. Exported as OPENCLAW_GATEWAY_TOKEN so the gateway
+# server and the TUI client both see it; also written into openclaw.json under
+# gateway.auth so config-driven clients resolve the same secret.
+ensure_openclaw_gateway_token() {
+  local token_file="${HOME}/.openclaw/gateway-token"
+  if [ -s "${token_file}" ]; then
+    OPENCLAW_GATEWAY_TOKEN="$(cat "${token_file}" 2>/dev/null)"
+  fi
+  if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+    OPENCLAW_GATEWAY_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-32)"
+    mkdir -p "$(dirname "${token_file}")"
+    printf '%s' "${OPENCLAW_GATEWAY_TOKEN}" > "${token_file}"
+    chmod 600 "${token_file}"
+  fi
+  export OPENCLAW_GATEWAY_TOKEN
+}
+
+# Start the OpenClaw Gateway on loopback (idempotent — reuses one already
+# listening). The Gateway provides web search/fetch and other gateway tools to
+# the TUI; without it the TUI runs in local-embedded mode with no web tools.
+# Detached so it survives `exec` of the TUI; dies when the sandbox stops.
+# Non-fatal: if it cannot bind, the TUI still launches in local-embedded mode
+# (just without web tools) so the agent remains usable.
+start_openclaw_gateway() {
+  # A stable token is required: the TUI (this shell) and a possibly already
+  # running gateway (from a previous launch) must present the same token.
+  ensure_openclaw_gateway_token
+
+  # Reuse a gateway that is already listening (e.g. from a previous launch).
+  if curl -s --noproxy '*' --max-time 1 \
+      "http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}/" >/dev/null 2>&1; then
+    log_info "OpenClaw gateway already running on 127.0.0.1:${OPENCLAW_GATEWAY_PORT}"
+    return 0
+  fi
+
+  log_info "Starting OpenClaw gateway on 127.0.0.1:${OPENCLAW_GATEWAY_PORT}..."
+
+  setsid openclaw gateway \
+      --allow-unconfigured --auth token --bind loopback \
+      --port "${OPENCLAW_GATEWAY_PORT}" \
+    >/tmp/openclaw-gateway.log 2>&1 </dev/null &
+
+  local i
+  for i in $(seq 1 50); do
+    if curl -s --noproxy '*' --max-time 1 \
+        "http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}/" >/dev/null 2>&1; then
+      log_info "OpenClaw gateway listening on 127.0.0.1:${OPENCLAW_GATEWAY_PORT}"
+      return 0
+    fi
+    sleep 0.2
+  done
+  log_warn "OpenClaw gateway did not become reachable (see /tmp/openclaw-gateway.log); web tools may be unavailable"
+  return 0
+}
+
 # Write Kimi Code's config so it targets the local relay (which forwards to
 # the host Ollama via the OpenAI-compatible /v1 endpoint). A dummy API key
 # satisfies Kimi Code's credential requirement so it does not prompt for
@@ -333,7 +426,7 @@ write_kimi_config() {
   # [models."<tag>"] entry so kimi can resolve it for subagent spawning.
   local secondary_model="ollama"
 
-  if [ -n "${KIMI_SECONDARY_MODEL}" ]; then
+  if [ -n "${KIMI_SECONDARY_MODEL:-}" ]; then
     # Verify the secondary model is available in Ollama before registering it.
     if curl -fsS -o /dev/null "${CLOMA_OLLAMA_URL}/api/show" \
         -d "{\"model\":\"${KIMI_SECONDARY_MODEL}\"}" 2>/dev/null; then
@@ -368,7 +461,7 @@ EOF
   # When a custom secondary model is requested, append a [models."<tag>"]
   # entry pointing at the same Ollama provider. Quoted keys are needed
   # because model tags contain dots (e.g. "kimi-k2.7-code:cloud").
-  if [ -n "${KIMI_SECONDARY_MODEL}" ]; then
+  if [ -n "${KIMI_SECONDARY_MODEL:-}" ]; then
     cat >> "${config_file}" <<EOF
 
 [models."${KIMI_SECONDARY_MODEL}"]
@@ -413,15 +506,30 @@ launch_kimi() {
 # The agent runs inside an isolated sandbox, so the toolset is configured
 # permissively for a coding agent: the "coding" profile (fs, shell, sessions,
 # memory, web, agents, media, plugins), web search + web fetch, memory +
-# planning, tool-loop safety, forced code mode, subagent session visibility,
-# subagent file attachments, shell/exec tuning, image understanding via an
-# Ollama vision model, an empty MCP server map ready for user-defined servers,
-# and an optional Telegram bot channel.
+# planning, tool-loop safety, codeMode disabled (direct tool exposure — the
+# agent sees the real shell exec, browser, and web_search tools directly,
+# instead of code mode's QuickJS JS sandbox which hides the full catalog behind
+# a JS bridge that small/local models can't drive; this OpenClaw build's schema
+# only accepts a boolean, so "auto" is not available here), subagent session
+# visibility, subagent file attachments, shell/exec with full
+# approval mode + gateway host (so the agent can install dependencies and write
+# code without an approval gate), a headless Chromium for the browser tool
+# (installed by Playwright during provisioning, --no-sandbox for Docker), image
+# understanding via an Ollama vision model, an empty MCP server map ready for
+# user-defined servers, and an optional Telegram bot channel.
 #
 # Environment overrides (pass via cloma --env):
+#   OPENCLAW_CODE_MODE           1 enables code mode (JS-sandbox tool orchestration)
+#                               for capable models; default 0 = direct tools, which
+#                               is what small/local Ollama models need.
 #   OPENCLAW_VISION_MODEL        Ollama vision model for images (default: llava).
 #   OPENCLAW_WEB_SEARCH_PROVIDER web search provider (default: ollama, which
 #                               reuses the relay; try duckduckgo for keyless).
+#   OPENCLAW_BROWSER_HEADLESS    Force headless off with 0 (default 1; the
+#                               sandbox has no display).
+#   OPENCLAW_BROWSER_NO_SANDBOX  1 (default) adds --no-sandbox to Chromium,
+#                               required in Docker; set 0 only with privileges.
+#   PLAYWRIGHT_BROWSERS_PATH      Where Chromium lives (default /opt/browsers).
 #   TELEGRAM_BOT_TOKEN           Telegram bot token from @BotFather. When set,
 #                               the Telegram channel is enabled and cloma
 #                               launches the OpenClaw gateway (which hosts the
@@ -441,6 +549,10 @@ write_openclaw_config() {
   local config_file="${config_dir}/openclaw.json"
   mkdir -p "${config_dir}"
 
+  # Resolve the loopback gateway token before writing config so it can be
+  # embedded in gateway.auth below (shared by the gateway server and the TUI).
+  ensure_openclaw_gateway_token
+
   local relay_base="http://127.0.0.1:${OLLAMA_RELAY_PORT}"
 
   # The vision model is an Ollama model running on the host; pull it first
@@ -452,6 +564,22 @@ write_openclaw_config() {
   # Override with --env 'OPENCLAW_WEB_SEARCH_PROVIDER=duckduckgo' for a keyless
   # provider that reaches the public internet directly from the sandbox.
   local web_search_provider="${OPENCLAW_WEB_SEARCH_PROVIDER:-ollama}"
+
+  # Code mode (tools.codeMode) hides the full tool catalog behind a QuickJS JS
+  # sandbox: the agent only gets a JS `exec` + `wait` and must drive the real
+  # tools (shell, browser, web) through a tools.search()/tools.call() bridge.
+  # It's a token-saving optimization for "preferred" models (Claude/GPT/Gemini
+  # tier) that reliably write that JS, but it traps small/local Ollama models
+  # that can't — they lose direct shell/browser/web access (the "I can only run
+  # JS / can't install deps" failure). This OpenClaw build's schema only accepts
+  # a boolean (no "auto" per-model switch), so cloma defaults it OFF (direct
+  # tools work for every model). Override with --env 'OPENCLAW_CODE_MODE=1' when
+  # running a capable model that benefits from code mode.
+  local code_mode="false"
+  case "${OPENCLAW_CODE_MODE:-0}" in
+    1|true|TRUE|True|yes) code_mode="true" ;;
+    *) code_mode="false" ;;
+  esac
 
   # Telegram bot channel — only enabled when a bot token is provided. OpenClaw
   # reads TELEGRAM_BOT_TOKEN as the default-account fallback, so we enable the
@@ -472,6 +600,30 @@ write_openclaw_config() {
     log_info "Telegram channel enabled (dmPolicy=${TELEGRAM_DM_POLICY:-pairing}, groupPolicy=${TELEGRAM_GROUP_POLICY:-allowlist})"
   fi
 
+  # Locate the headless Chromium installed by Playwright during provisioning
+  # (arm64-safe, unlike the amd64-only google-chrome .deb). Fall back to any
+  # system Chrome/Chromium. When a binary is found, pin it via executablePath
+  # so OpenClaw's browser plugin launches headless with --no-sandbox (required
+  # in Docker). noSandbox/headless are set unconditionally below.
+  local browser_path=""
+  local p
+  for p in /opt/browsers/chromium-*/chrome-linux/chrome \
+           /opt/browsers/chromium-*/chrome-linux/headless_shell; do
+    if [ -x "$p" ]; then browser_path="$p"; break; fi
+  done
+  if [ -z "${browser_path}" ]; then
+    for p in /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
+      if [ -x "$p" ]; then browser_path="$p"; break; fi
+    done
+  fi
+  local browser_json='"enabled": true, "headless": true, "noSandbox": true'
+  if [ -n "${browser_path}" ]; then
+    browser_json="${browser_json}, \"executablePath\": \"${browser_path}\""
+    log_info "Browser: ${browser_path}"
+  else
+    log_warn "No Chromium found; browser tool will try to auto-install on first use (slow) or fail"
+  fi
+
   cat > "${config_file}" <<EOF
 {
   "agents": {
@@ -486,8 +638,8 @@ write_openclaw_config() {
         "apiKey": "ollama-local",
         "api": "ollama",
         "models": [
-          { "id": "${CLOMA_MODEL}", "name": "Ollama (${CLOMA_MODEL})", "contextWindow": 262144 },
-          { "id": "${vision_model}", "name": "Ollama vision (${vision_model})", "contextWindow": 8192 }
+          { "id": "${CLOMA_MODEL}", "name": "Ollama (${CLOMA_MODEL})", "contextWindow": 262144, "params": { "num_ctx": 262144 } },
+          { "id": "${vision_model}", "name": "Ollama vision (${vision_model})", "contextWindow": 8192, "params": { "num_ctx": 8192 } }
         ]
       }
     }
@@ -496,14 +648,27 @@ write_openclaw_config() {
   "mcp": {
     "servers": {}
   },
+  "gateway": {
+    "auth": { "mode": "token", "token": "${OPENCLAW_GATEWAY_TOKEN}" }
+  },
+  "browser": { ${browser_json} },
   "tools": {
     "profile": "coding",
-    "codeMode": { "enabled": true },
+    "codeMode": { "enabled": ${code_mode} },
     "loopDetection": { "enabled": true },
     "sessions": { "visibility": "tree" },
-    "sessions_spawn": { "attachments": true },
+    "sessions_spawn": {
+      "attachments": {
+        "enabled": true,
+        "maxTotalBytes": 5242880,
+        "maxFiles": 50,
+        "maxFileBytes": 1048576
+      }
+    },
     "exec": {
-      "timeoutSeconds": 1800,
+      "mode": "full",
+      "host": "gateway",
+      "timeoutSec": 1800,
       "notifyOnExit": true,
       "commandHighlighting": true,
       "applyPatch": { "enabled": true }
@@ -542,10 +707,78 @@ csv_to_json_array() {
 }
 
 # Launch OpenClaw.
+# ensure_openclaw_bootstrap writes OpenClaw's persona bootstrap file (SOUL.md)
+# into the workspace before launch. OpenClaw loads workspace bootstrap files
+# (SOUL.md/USER.md/IDENTITY.md/HEARTBEAT.md) into the agent's context at startup
+# (controlled by agents.defaults.contextInjection). By default OpenClaw creates
+# these if missing, so writing SOUL.md first makes the agent load our directive
+# instead of an auto-generated one. This is the supported, schema-stable way to
+# steer the agent's answer style without guessing config keys (which the schema
+# rejects, e.g. there is no agents.defaults.instructions/systemPrompt field and
+# promptOverlays is GPT-5-only). Set OPENCLAW_NO_BOOTSTRAP=1 to skip; an existing
+# SOUL.md is left untouched so user-authored personas win.
+ensure_openclaw_bootstrap() {
+  case "${OPENCLAW_NO_BOOTSTRAP:-0}" in
+    1|true|TRUE|True|yes) return 0 ;;
+  esac
+  local soul="SOUL.md"
+  if [ -s "${soul}" ]; then
+    log_info "Existing ${soul} found; leaving it in place"
+    return 0
+  fi
+  log_info "Writing ${soul} (answer-style directive) into workspace"
+  cat > "${soul}" <<'SOUL'
+# Soul
+
+You are an autonomous coding agent running in an isolated sandbox. You have
+real tools: a shell (exec), a headless browser, and web search/fetch. You can
+install dependencies — pip, apt-get and npm all work; plain `pip install <pkg>`
+is fine. `python` is available (alias of python3). You have passwordless sudo.
+
+## Autonomy — important
+- Complete the task by whatever means necessary. Make decisions, pick tools,
+  install software, write/run/edit files, browse, and search without asking
+  for permission at each step.
+- Do not stop to ask "should I?" for ordinary work. Proceed and get it done.
+- Do not stop until the goal is fully achieved. If one approach fails, rethink
+  the problem and try a different approach — keep going. After each reply, if
+  the goal is not yet complete, continue working toward it in the same turn
+  instead of stopping and waiting for the user. Only stop when the goal is
+  done, or when you hit a genuine hard blocker (safety, or a credential /
+  permission you cannot obtain yourself).
+- Only stop and ask the user when an action is genuinely dangerous or unsafe:
+  destroying data, irreversible deletions outside your task scope, exposing
+  secrets/credentials, or anything that could break the environment. When in
+  doubt about safety (not difficulty), pause and ask — difficulty is never a
+  reason to stop.
+- Never hand a task back to the user. Do NOT say "you can check ...", "I
+  recommend you visit ...", or "would you like me to fetch/browse ...?" — if a
+  tool (web fetch, browser, exec) can do it, USE the tool and report the
+  result. Asking "would you like me to...?" is always wrong: just do it. Only
+  ask the user when you need a decision or a credential you cannot obtain
+  yourself.
+- If a path is blocked, find another way yourself; only report a hard blocker
+  after you have genuinely tried alternatives.
+
+## Answer style — important
+- Answer the user's question directly and concisely. Lead with the result.
+- If you ran code or a shell command, put the actual output/result as the
+  FIRST line of your reply.
+- Do NOT open with "Done. Here's what happened:" or a numbered recap of steps.
+- Do not send progress narration as separate messages ("I'll install...",
+  "Now running the script:"). Do the work silently, then reply with the
+  answer.
+- Only recap the steps you took if the user explicitly asks.
+- No filler, no apologies, no "I'm sorry, I cannot...". If something failed,
+  say the error and the fix in one line.
+SOUL
+}
+
 launch_openclaw() {
   # OpenClaw reads providers/models from ~/.openclaw/openclaw.json (written
   # above). The relay bridges OpenClaw's Node fetch to the host Ollama.
   start_ollama_relay
+  ensure_openclaw_bootstrap
 
   printf '\n'
 
@@ -561,13 +794,171 @@ launch_openclaw() {
     fi
   fi
 
-  # Otherwise bare `openclaw` opens the agent TUI against the configured provider.
+  # Otherwise bare `openclaw` opens the agent TUI against the configured
+  # provider. Start a loopback Gateway first so the TUI connects to it and
+  # web search/fetch (gateway tools) are available; without a Gateway the TUI
+  # runs in local-embedded mode with no web tools.
+  start_openclaw_gateway
+
   log_info "Launching OpenClaw with model: ollama (${CLOMA_MODEL})"
   if [ -n "${CLOMA_FLAGS}" ]; then
     exec openclaw ${CLOMA_FLAGS}
   else
     exec openclaw
   fi
+}
+
+# Write Junie CLI's custom model profile so it targets the local relay (which
+# forwards to the host Ollama using the OpenAI-compatible /v1/chat/completions
+# endpoint). The profile lives at ~/.junie/models/ollama.json and is selected
+# with `junie --model custom:ollama`. Custom model profiles require the Junie
+# EAP build (installed during provisioning).
+#
+# Junie has no documented flag/env var for a custom OpenAI-compatible base URL,
+# so a custom model profile is the only way to point it at a local Ollama
+# instance. A dummy API key ("ollama") satisfies the credential field — Ollama
+# ignores it. Use OpenAICompletion (chat completions) rather than
+# OpenAIResponses, which community reports show is more reliable with Ollama.
+#
+# Environment overrides (pass via cloma --env):
+#   JUNIE_FASTER_MODEL   Optional lighter Ollama model for quick tasks
+#                        (summarization, autocomplete). When set and available
+#                        in Ollama, it is registered as the profile's
+#                        fasterModel; otherwise it is omitted.
+#   JUNIE_TEMPERATURE    Sampling temperature (default: 0.3).
+write_junie_config() {
+  local models_dir="${HOME}/.junie/models"
+  local profile_file="${models_dir}/ollama.json"
+  mkdir -p "${models_dir}"
+
+  local relay_base="http://127.0.0.1:${OLLAMA_RELAY_PORT}"
+
+  local temperature="${JUNIE_TEMPERATURE:-0.3}"
+
+  # Optional faster model for quick tasks. Verify it exists in Ollama before
+  # registering it, mirroring the KIMI_SECONDARY_MODEL handling.
+  local faster_block=""
+  if [ -n "${JUNIE_FASTER_MODEL:-}" ]; then
+    if curl -fsS -o /dev/null "${CLOMA_OLLAMA_URL}/api/show" \
+        -d "{\"model\":\"${JUNIE_FASTER_MODEL}\"}" 2>/dev/null; then
+      log_info "Faster model ${JUNIE_FASTER_MODEL} is available"
+      faster_block=$(printf ',\n  "fasterModel": {\n    "id": "%s",\n    "temperature": %s\n  }' \
+        "${JUNIE_FASTER_MODEL}" "${temperature}")
+    else
+      log_error "Faster model ${JUNIE_FASTER_MODEL} not found in Ollama"
+      log_error "Pull it first: ollama pull ${JUNIE_FASTER_MODEL}"
+      exit 1
+    fi
+  fi
+
+  cat > "${profile_file}" <<EOF
+{
+  "id": "ollama",
+  "baseUrl": "${relay_base}/v1/chat/completions",
+  "apiType": "OpenAICompletion",
+  "apiKey": "ollama",
+  "primaryModel": {
+    "id": "${CLOMA_MODEL}",
+    "temperature": ${temperature}
+  }${faster_block}
+}
+EOF
+
+  log_info "Wrote junie model profile to ${profile_file} (baseUrl=${relay_base}/v1/chat/completions)"
+}
+
+# Ensure Junie's user settings default to dark mode.
+#
+# Junie stores the terminal theme in ~/.junie/settings.json under the
+# `selectedTheme` key, whose value is the ThemeOption enum name: "Auto"
+# (default), "Light", "Dark" or "Code". "Auto" resolves the theme by probing
+# the OS (Linux GTK theme, macOS, Windows) and the COLORFGBG env var — none of
+# which exist in a headless Docker sandbox, so Auto falls back to a light theme.
+# Pin "Dark" so the TUI renders dark by default.
+#
+# This is a merge, not an overwrite: settings.json also holds braveMode,
+# modelForLaunch, sessionCount, etc. (Junie creates it on first run), so an
+# existing file is read, `selectedTheme` is added only when absent, and the
+# result is written atomically. An existing selectedTheme is left untouched so
+# a theme the user picked via the TUI's /settings wins. python3 is guaranteed
+# present (provisioning installs it for the shared Ollama relay), so it is used
+# for the JSON merge rather than depending on jq.
+#
+# Environment overrides (pass via cloma --env):
+#   JUNIE_THEME  Terminal theme (default: Dark). One of "Dark", "Light",
+#                "Auto" or "Code" (case-insensitive: dark/light/auto/code also
+#                accepted). Override to switch away from the dark default.
+ensure_junie_settings() {
+  local settings_file="${HOME}/.junie/settings.json"
+  mkdir -p "$(dirname "${settings_file}")"
+
+  # Normalize to the PascalCase enum names Junie stores.
+  local theme="${JUNIE_THEME:-Dark}"
+  case "$(printf '%s' "${theme}" | tr '[:upper:]' '[:lower:]')" in
+    dark)  theme="Dark" ;;
+    light) theme="Light" ;;
+    auto)  theme="Auto" ;;
+    code)  theme="Code" ;;
+    *) ;; # unknown values pass through verbatim
+  esac
+
+  if ! python3 - "${settings_file}" "${theme}" <<'PYEOF'
+import json, os, sys, tempfile
+path, theme = sys.argv[1], sys.argv[2]
+data = {}
+try:
+    with open(path) as f:
+        loaded = json.load(f)
+        data = loaded if isinstance(loaded, dict) else {}
+except FileNotFoundError:
+    data = {}
+except (json.JSONDecodeError, OSError, ValueError):
+    data = {}
+# Don't clobber a theme the user already chose via /settings.
+if not data.get('selectedTheme'):
+    data['selectedTheme'] = theme
+os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+# Atomic write so Junie never reads a half-written settings file.
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or '.',
+                           prefix='.settings-', suffix='.json')
+try:
+    with os.fdopen(fd, 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+    os.replace(tmp, path)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+PYEOF
+  then
+    log_warn "Could not write Junie settings; continuing (theme may default to Auto/light)"
+  else
+    log_info "Junie terminal theme: ${theme} (${settings_file})"
+  fi
+}
+
+# Launch Junie CLI.
+launch_junie() {
+  # Junie reads custom model profiles from ~/.junie/models/*.json (written
+  # above). The relay bridges Junie's HTTP client to the host Ollama, mirroring
+  # the kimi/openclaw setup.
+  start_ollama_relay
+  ensure_junie_settings
+
+  log_info "Launching Junie CLI with model: custom:ollama (${CLOMA_MODEL})"
+  printf '\n'
+
+  # `--model custom:ollama` selects the custom profile written by
+  # write_junie_config; `--skip-update-check` avoids an outbound update probe.
+  local junie_args=(--model custom:ollama --skip-update-check)
+  if [ -n "${CLOMA_FLAGS}" ]; then
+    # shellcheck disable=SC2086
+    junie_args+=( ${CLOMA_FLAGS} )
+  fi
+  exec junie "${junie_args[@]}"
 }
 
 # Main entry point
@@ -606,8 +997,12 @@ main() {
       write_openclaw_config
       launch_openclaw
       ;;
+    junie)
+      write_junie_config
+      launch_junie
+      ;;
     *)
-      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi' or 'openclaw')"
+      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi', 'openclaw' or 'junie')"
       exit 1
       ;;
   esac
