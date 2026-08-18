@@ -867,12 +867,86 @@ EOF
   log_info "Wrote junie model profile to ${profile_file} (baseUrl=${relay_base}/v1/chat/completions)"
 }
 
+# Ensure Junie's user settings default to dark mode.
+#
+# Junie stores the terminal theme in ~/.junie/settings.json under the
+# `selectedTheme` key, whose value is the ThemeOption enum name: "Auto"
+# (default), "Light", "Dark" or "Code". "Auto" resolves the theme by probing
+# the OS (Linux GTK theme, macOS, Windows) and the COLORFGBG env var — none of
+# which exist in a headless Docker sandbox, so Auto falls back to a light theme.
+# Pin "Dark" so the TUI renders dark by default.
+#
+# This is a merge, not an overwrite: settings.json also holds braveMode,
+# modelForLaunch, sessionCount, etc. (Junie creates it on first run), so an
+# existing file is read, `selectedTheme` is added only when absent, and the
+# result is written atomically. An existing selectedTheme is left untouched so
+# a theme the user picked via the TUI's /settings wins. python3 is guaranteed
+# present (provisioning installs it for the shared Ollama relay), so it is used
+# for the JSON merge rather than depending on jq.
+#
+# Environment overrides (pass via cloma --env):
+#   JUNIE_THEME  Terminal theme (default: Dark). One of "Dark", "Light",
+#                "Auto" or "Code" (case-insensitive: dark/light/auto/code also
+#                accepted). Override to switch away from the dark default.
+ensure_junie_settings() {
+  local settings_file="${HOME}/.junie/settings.json"
+  mkdir -p "$(dirname "${settings_file}")"
+
+  # Normalize to the PascalCase enum names Junie stores.
+  local theme="${JUNIE_THEME:-Dark}"
+  case "$(printf '%s' "${theme}" | tr '[:upper:]' '[:lower:]')" in
+    dark)  theme="Dark" ;;
+    light) theme="Light" ;;
+    auto)  theme="Auto" ;;
+    code)  theme="Code" ;;
+    *) ;; # unknown values pass through verbatim
+  esac
+
+  if ! python3 - "${settings_file}" "${theme}" <<'PYEOF'
+import json, os, sys, tempfile
+path, theme = sys.argv[1], sys.argv[2]
+data = {}
+try:
+    with open(path) as f:
+        loaded = json.load(f)
+        data = loaded if isinstance(loaded, dict) else {}
+except FileNotFoundError:
+    data = {}
+except (json.JSONDecodeError, OSError, ValueError):
+    data = {}
+# Don't clobber a theme the user already chose via /settings.
+if not data.get('selectedTheme'):
+    data['selectedTheme'] = theme
+os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+# Atomic write so Junie never reads a half-written settings file.
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or '.',
+                           prefix='.settings-', suffix='.json')
+try:
+    with os.fdopen(fd, 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+    os.replace(tmp, path)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+PYEOF
+  then
+    log_warn "Could not write Junie settings; continuing (theme may default to Auto/light)"
+  else
+    log_info "Junie terminal theme: ${theme} (${settings_file})"
+  fi
+}
+
 # Launch Junie CLI.
 launch_junie() {
   # Junie reads custom model profiles from ~/.junie/models/*.json (written
   # above). The relay bridges Junie's HTTP client to the host Ollama, mirroring
   # the kimi/openclaw setup.
   start_ollama_relay
+  ensure_junie_settings
 
   log_info "Launching Junie CLI with model: custom:ollama (${CLOMA_MODEL})"
   printf '\n'

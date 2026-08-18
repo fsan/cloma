@@ -128,6 +128,15 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("git clone failed: %w", err)
 	}
 
+	// Cloning a tag leaves the repo in a detached HEAD state, which makes
+	// git print a noisy warning. Create a temporary branch pointing at the
+	// current commit so the working tree is on a normal branch instead.
+	switchCmd := exec.Command("git", "switch", "-c", "cloma-update")
+	switchCmd.Dir = tmpDir
+	if err := switchCmd.Run(); err != nil {
+		return fmt.Errorf("git switch failed: %w", err)
+	}
+
 	// Build the binary.
 	fmt.Println("Building cloma...")
 	buildCmd := exec.Command("make", "build")

@@ -278,6 +278,7 @@ Tune Junie from cloma with `--env` (each `KEY=VALUE`):
 |---------|---------|-------------|
 | `JUNIE_FASTER_MODEL` | (unset) | Optional lighter Ollama model for quick tasks (summarization, autocomplete); must be pulled on the host |
 | `JUNIE_TEMPERATURE` | `0.3` | Sampling temperature written into the model profile |
+| `JUNIE_THEME` | `Dark` | Terminal theme written to `~/.junie/settings.json` (`selectedTheme`): `Dark`, `Light`, `Auto` or `Code` (case-insensitive). cloma defaults to dark because Junie's `Auto` probes the OS/GTK theme and `COLORFGBG`, none of which exist in a headless sandbox, so `Auto` falls back to light. An existing `selectedTheme` (e.g. set via the TUI's `/settings`) is preserved |
 | `OLLAMA_RELAY_PORT` | `18999` | Local relay port (`KIMI_RELAY_PORT` is honored as a legacy fallback) |
 | `OLLAMA_RELAY_UPSTREAM` | `http://host.docker.internal:11434` | Where the relay forwards to |
 
@@ -610,8 +611,8 @@ each agent's section:
   [Tune OpenClaw from cloma](#setting-environment-variables-in-the-sandbox).
 - Kimi: `KIMI_SECONDARY_MODEL`, `OLLAMA_RELAY_PORT`, `OLLAMA_RELAY_UPSTREAM` —
   see [the Kimi section](#setting-environment-variables-in-the-sandbox).
-- Junie: `JUNIE_FASTER_MODEL`, `JUNIE_TEMPERATURE`, `OLLAMA_RELAY_PORT`,
-  `OLLAMA_RELAY_UPSTREAM` — see
+- Junie: `JUNIE_FASTER_MODEL`, `JUNIE_TEMPERATURE`, `JUNIE_THEME`,
+  `OLLAMA_RELAY_PORT`, `OLLAMA_RELAY_UPSTREAM` — see
   [the Junie section](#setting-environment-variables-in-the-sandbox).
 
 | Variable | Description |
