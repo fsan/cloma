@@ -20,6 +20,7 @@ const (
 	AgentKimi     = "kimi"
 	AgentOpenClaw = "openclaw"
 	AgentJunie    = "junie"
+	AgentPi       = "pi"
 )
 
 // SandboxClient holds configuration for sandbox operations.
@@ -34,7 +35,8 @@ type SandboxClient struct {
 
 	// Agent is the code agent to launch inside the sandbox.
 	// Supported values: "claude" (Claude Code, default), "grok" (Grok Build),
-	// "kimi" (Kimi Code), "openclaw" (OpenClaw) and "junie" (Junie CLI).
+	// "kimi" (Kimi Code), "openclaw" (OpenClaw), "junie" (Junie CLI) and
+	// "pi" (Pi coding agent).
 	Agent string
 }
 
@@ -91,6 +93,8 @@ func NormalizeAgent(agent string) string {
 		return AgentOpenClaw
 	case AgentJunie:
 		return AgentJunie
+	case AgentPi:
+		return AgentPi
 	default:
 		return AgentClaude
 	}

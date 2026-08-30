@@ -25,6 +25,7 @@ var (
 	runTempfs        bool
 	runTempfsSize    string
 	runTempfsMounted bool // set during run when --tempfs produced a real tmpfs mount
+	runInteractive   bool
 )
 
 // runCmd represents the run command
@@ -68,7 +69,7 @@ func addRunFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&runModel, "model", "m", "", "AI model to use (default: glm-5:cloud)")
 	cmd.Flags().IntVarP(&runPort, "port", "p", 0, "Ollama port (default: 11434)")
 	cmd.Flags().StringVarP(&runFlags, "flags", "f", "", "Additional flags to pass to the agent")
-	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default), grok (Grok Build), kimi (Kimi Code), openclaw (OpenClaw) or junie (Junie CLI)")
+	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default), grok (Grok Build), kimi (Kimi Code), openclaw (OpenClaw), junie (Junie CLI) or pi (Pi coding agent)")
 	cmd.Flags().StringVarP(&runName, "name", "n", "", "Name this cloma instance (overrides the workspace-derived sandbox name, enabling multiple instances from the same folder)")
 	// --env can be repeated to inject multiple environment variables into the
 	// sandbox. Each value must be in KEY=VALUE form, e.g. --env 'DEBUG=1'.
@@ -79,12 +80,25 @@ func addRunFlags(cmd *cobra.Command) {
 	// privileges it falls back to a plain empty directory under /tmp.
 	cmd.Flags().BoolVar(&runTempfs, "tempfs", false, "Use an ephemeral in-memory (tmpfs) workspace on the host instead of the local directory (falls back to a /tmp dir on macOS)")
 	cmd.Flags().StringVar(&runTempfsSize, "tempfs-size", "1g", "Size of the tmpfs workspace (e.g. 1g, 512m); used with --tempfs on Linux")
+	// --interactive turns the launch into a wizard: required parameters
+	// (workspace, Ollama port, model, agent) are prompted one at a time, then
+	// the optional ones. Flags already passed act as prompt defaults.
+	cmd.Flags().BoolVarP(&runInteractive, "interactive", "i", false, "Fill in options interactively: prompt for required parameters (workspace, port, model, agent), then optional ones")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
 	// Initialize config
 	if err := config.Initialize(); err != nil {
 		return fmt.Errorf("failed to initialize config: %w", err)
+	}
+
+	// Interactive mode: fill in the run options via prompts (required
+	// parameters first, then optional ones) before resolving anything.
+	// Flags already passed (e.g. `cloma -m <model> -i`) serve as defaults.
+	if runInteractive {
+		if err := interactiveSetup(); err != nil {
+			return err
+		}
 	}
 
 	// Get configuration values
@@ -101,7 +115,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 	ollamaURL := fmt.Sprintf("http://localhost:%d", ollamaPort)
 
 	// Resolve the code agent (claude by default, grok for Grok Build, kimi for
-	// Kimi Code, openclaw for OpenClaw, junie for Junie CLI).
+	// Kimi Code, openclaw for OpenClaw, junie for Junie CLI, pi for the Pi
+	// coding agent).
 	agent := runAgent
 	if agent == "" {
 		agent = config.GetAgent()

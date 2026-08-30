@@ -16,7 +16,8 @@ const (
 
 	// DefaultAgent is the default code agent to run inside the sandbox.
 	// Supported values: "claude" (Claude Code), "grok" (Grok Build), "kimi"
-	// (Kimi Code), "openclaw" (OpenClaw) and "junie" (Junie CLI).
+	// (Kimi Code), "openclaw" (OpenClaw), "junie" (Junie CLI) and "pi"
+	// (Pi coding agent).
 	DefaultAgent = "claude"
 
 	// DefaultOllamaPort is the default port for Ollama.
@@ -41,7 +42,7 @@ type Config struct {
 	Model string
 
 	// Agent is the code agent to run inside the sandbox ("claude", "grok",
-	// "kimi", "openclaw" or "junie").
+	// "kimi", "openclaw", "junie" or "pi").
 	Agent string
 
 	// OllamaPort is the port where Ollama is running.
@@ -157,7 +158,7 @@ func GetModel() string {
 }
 
 // GetAgent returns the configured code agent ("claude", "grok", "kimi",
-// "openclaw" or "junie").
+// "openclaw", "junie" or "pi").
 func GetAgent() string {
 	return viper.GetString("agent")
 }

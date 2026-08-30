@@ -2,7 +2,7 @@
 # Entry point script for code agents in Docker sandbox.
 #
 # This script is copied into the sandbox and executed to start a code agent.
-# It supports five agents, selected via the CLOMA_AGENT environment variable:
+# It supports six agents, selected via the CLOMA_AGENT environment variable:
 #
 #   - claude (default): Claude Code, driven by the Anthropic Messages API.
 #   - grok:             Grok Build, driven by an OpenAI-compatible endpoint.
@@ -10,6 +10,8 @@
 #   - openclaw:         OpenClaw, driven by Ollama's native API.
 #   - junie:            Junie CLI (JetBrains), driven by an OpenAI-compatible
 #                       endpoint via a custom model profile.
+#   - pi:               Pi coding agent, driven by an OpenAI-compatible
+#                       endpoint via a custom provider in models.json.
 #
 # All agents are pointed at an Ollama instance running on the host. Ollama is
 # verified with its native API, then the selected agent is launched with a
@@ -26,7 +28,8 @@ WORKSPACE="${WORKSPACE:-$PWD}"
 
 # Make sure the per-user agent install locations are on PATH
 # (grok installs to ~/.grok/bin, kimi installs to ~/.kimi-code/bin,
-# openclaw installs to ~/.openclaw/bin, junie installs to ~/.junie/bin).
+# openclaw installs to ~/.openclaw/bin, junie installs to ~/.junie/bin,
+# pi installs to ~/.local/bin when the npm global prefix is not writable).
 export PATH="${HOME}/.junie/bin:${HOME}/.openclaw/bin:${HOME}/.kimi-code/bin:${HOME}/.grok/bin:${HOME}/.local/bin:${PATH}"
 
 # Colors for output
@@ -90,6 +93,7 @@ print_info() {
     kimi)     agent_name="Kimi Code" ;;
     openclaw) agent_name="OpenClaw" ;;
     junie)    agent_name="Junie CLI" ;;
+    pi)       agent_name="Pi Coding Agent" ;;
     claude)   agent_name="Claude Code" ;;
     *)        agent_name="${CLOMA_AGENT}" ;;
   esac
@@ -169,8 +173,35 @@ ensure_agent_installed() {
       log_info "Installing Junie CLI (EAP)..."
       curl -fsSL https://junie.jetbrains.com/install-eap.sh | bash
       ;;
+    pi)
+      if command -v pi >/dev/null 2>&1; then
+        return 0
+      fi
+      # Pi requires Node.js 22.19+ and npm; provisioning installs Node 22 via
+      # NodeSource, but fall back to it here in case the sandbox was created
+      # before this agent was selected. Pi's installer is non-interactive when
+      # no TTY is attached (which is the case inside the sandbox).
+      need_node=0
+      if ! command -v node >/dev/null 2>&1; then
+        need_node=1
+      else
+        node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+        node_minor="$(node -p 'process.versions.node.split(".")[1]' 2>/dev/null || echo 0)"
+        if [ "${node_major}" -lt 22 ] || { [ "${node_major}" -eq 22 ] && [ "${node_minor}" -lt 19 ]; }; then
+          need_node=1
+        fi
+      fi
+      if [ "${need_node}" -eq 1 ]; then
+        log_info "Installing Node.js 22 for Pi..."
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+        apt-get install -y --no-install-recommends nodejs
+        rm -rf /var/lib/apt/lists/*
+      fi
+      log_info "Installing Pi coding agent..."
+      curl -fsSL https://pi.dev/install.sh | sh
+      ;;
     *)
-      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi', 'openclaw' or 'junie')"
+      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi', 'openclaw', 'junie' or 'pi')"
       exit 1
       ;;
   esac
@@ -235,16 +266,16 @@ launch_grok() {
   fi
 }
 
-# Node-based agents (kimi, openclaw) use Node fetch (undici), which cannot
+# Node-based agents (kimi, openclaw, pi) use Node fetch (undici), which cannot
 # reach the host Ollama through cloma's network proxy: the proxy accepts only
 # non-tunneling requests (curl-style), while undici ignores HTTP_PROXY by
 # default and tunnels (CONNECT) when forced via NODE_USE_ENV_PROXY, which the
 # proxy rejects. The sandbox's localhost:<port> is not directly mapped to the
 # host either. So we run a tiny local relay that the agent's fetch talks to
 # directly (127.0.0.1), and which forwards to Ollama through the proxy the
-# way curl does (non-tunneling). Both kimi and openclaw share this relay:
-# the agent selects the API surface via its own base URL (/v1 for kimi's
-# OpenAI-compatible client, the native /api for openclaw).
+# way curl does (non-tunneling). kimi, openclaw, junie and pi share this
+# relay: each agent selects the API surface via its own base URL (/v1 for the
+# OpenAI-compatible clients, the native /api for openclaw).
 OLLAMA_RELAY_PORT="${OLLAMA_RELAY_PORT:-${KIMI_RELAY_PORT:-18999}}"
 OLLAMA_RELAY_UPSTREAM="${OLLAMA_RELAY_UPSTREAM:-${KIMI_RELAY_UPSTREAM:-http://host.docker.internal:11434}}"
 
@@ -961,6 +992,127 @@ launch_junie() {
   exec junie "${junie_args[@]}"
 }
 
+# Write Pi's custom provider config so it targets the local relay (which
+# forwards to the host Ollama using the OpenAI-compatible /v1 chat-completions
+# endpoint). Pi reads custom providers from ~/.pi/agent/models.json. A dummy
+# API key ("ollama") satisfies Pi's auth-presence requirement — without any
+# configured auth the model stays unavailable in /model and --model — while
+# Ollama itself ignores it. The compat flags disable the `developer` role and
+# `reasoning_effort` request fields, which Ollama's OpenAI-compatible server
+# rejects (pi docs call these out as common Ollama gotchas).
+#
+# Pi has no documented flag or environment variable for a custom base URL, so
+# models.json is the supported way to point it at a local Ollama instance.
+write_pi_config() {
+  local config_dir="${HOME}/.pi/agent"
+  local models_file="${config_dir}/models.json"
+  mkdir -p "${config_dir}"
+
+  local relay_base="http://127.0.0.1:${OLLAMA_RELAY_PORT}"
+
+  cat > "${models_file}" <<EOF
+{
+  "providers": {
+    "ollama": {
+      "baseUrl": "${relay_base}/v1",
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        { "id": "${CLOMA_MODEL}", "name": "Ollama (${CLOMA_MODEL})", "contextWindow": 262144 }
+      ]
+    }
+  }
+}
+EOF
+
+  log_info "Wrote pi models config to ${models_file} (baseUrl=${relay_base}/v1)"
+}
+
+# Ensure Pi's global settings default to the Ollama provider and skip the
+# interactive project-trust prompt. Pi stores global settings in
+# ~/.pi/agent/settings.json. `defaultProjectTrust` defaults to "ask", which
+# blocks interactive startup with a trust confirmation for workspaces that
+# carry local settings/skills — the sandbox is disposable, so "always" is
+# right here. This is a merge, not an overwrite (same approach as Junie's
+# settings): keys are only added when absent, so values the user picked via
+# /settings or /model (Ctrl+S) win. python3 is guaranteed present
+# (provisioning installs it for the shared Ollama relay).
+ensure_pi_settings() {
+  local settings_file="${HOME}/.pi/agent/settings.json"
+  mkdir -p "$(dirname "${settings_file}")"
+
+  if ! python3 - "${settings_file}" "${CLOMA_MODEL}" <<'PYEOF'
+import json, os, sys, tempfile
+path, model = sys.argv[1], sys.argv[2]
+data = {}
+try:
+    with open(path) as f:
+        loaded = json.load(f)
+        data = loaded if isinstance(loaded, dict) else {}
+except FileNotFoundError:
+    data = {}
+except (json.JSONDecodeError, OSError, ValueError):
+    data = {}
+# Only fill in defaults the user hasn't already chosen (e.g. via /settings
+# or Ctrl+S in /model); the explicit --model flag wins over these anyway.
+defaults = {
+    'defaultProvider': 'ollama',
+    'defaultModel': model,
+    'defaultProjectTrust': 'always',
+    'enableInstallTelemetry': False,
+}
+for k, v in defaults.items():
+    if k not in data:
+        data[k] = v
+os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+# Atomic write so Pi never reads a half-written settings file.
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or '.',
+                           prefix='.settings-', suffix='.json')
+try:
+    with os.fdopen(fd, 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+    os.replace(tmp, path)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+PYEOF
+  then
+    log_warn "Could not write Pi settings; continuing (trust prompt may appear)"
+  else
+    log_info "Pi settings ensured (${settings_file})"
+  fi
+}
+
+# Launch Pi.
+launch_pi() {
+  # Pi reads custom providers from ~/.pi/agent/models.json (written above).
+  # The relay bridges Pi's Node fetch to the host Ollama, mirroring the
+  # kimi/openclaw/junie setup. Skip the outbound update check so the sandboxed
+  # agent does not probe pi.dev on startup.
+  start_ollama_relay
+  ensure_pi_settings
+  export PI_SKIP_VERSION_CHECK="${PI_SKIP_VERSION_CHECK:-1}"
+
+  log_info "Launching Pi with model: ollama (${CLOMA_MODEL})"
+  printf '\n'
+
+  # `--model ollama/<id>` selects the custom provider entry + model written by
+  # write_pi_config.
+  if [ -n "${CLOMA_FLAGS}" ]; then
+    exec pi --model "ollama/${CLOMA_MODEL}" ${CLOMA_FLAGS}
+  else
+    exec pi --model "ollama/${CLOMA_MODEL}"
+  fi
+}
+
 # Main entry point
 main() {
   print_info
@@ -1001,8 +1153,12 @@ main() {
       write_junie_config
       launch_junie
       ;;
+    pi)
+      write_pi_config
+      launch_pi
+      ;;
     *)
-      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi', 'openclaw' or 'junie')"
+      log_error "Unknown agent: ${CLOMA_AGENT} (expected 'claude', 'grok', 'kimi', 'openclaw', 'junie' or 'pi')"
       exit 1
       ;;
   esac

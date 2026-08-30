@@ -212,8 +212,9 @@ cloma -w ~/myproject -m glm-4.7-flash --flags '--verbose'
 By default `cloma run` launches **Claude Code** inside the sandbox. Pass
 `--agent grok` to launch **Grok Build** (`grok`), `--agent kimi` to launch
 **Kimi Code** (`kimi`), `--agent openclaw` to launch **OpenClaw** (`openclaw`),
-or `--agent junie` to launch **Junie CLI** (`junie`) instead. All agents are
-driven by the same Ollama instance running on your host.
+`--agent junie` to launch **Junie CLI** (`junie`), or `--agent pi` to launch
+the **Pi coding agent** (`pi`) instead. All agents are driven by the same
+Ollama instance running on your host.
 
 ```bash
 # Launch Grok Build (default model)
@@ -239,7 +240,67 @@ cloma --agent junie
 
 # Launch Junie CLI with a specific model and workspace
 cloma --agent junie -w ~/myproject -m glm-4.7-flash
+
+# Launch Pi coding agent
+cloma --agent pi
+
+# Launch Pi coding agent with a specific model and workspace
+cloma --agent pi -w ~/myproject -m glm-4.7-flash
 ```
+
+### Interactive mode (`--interactive` / `-i`)
+
+Pass `--interactive` (or `-i`) to `cloma` / `cloma run` to fill in the options
+through a wizard instead of flags. Required parameters are asked one at a
+time, then the optional ones, and a final confirmation shows the resolved
+configuration before anything is created:
+
+```bash
+cloma -i
+```
+
+```text
+=== Cloma interactive setup ===
+Press Enter to accept the [default]. Ctrl-C aborts.
+
+Workspace directory [~/myproject]:            ← existing dir, or offer to create
+Ollama port [11434]:
+Model:                                       ← numbered list of what Ollama
+   1) glm-5:cloud (default)                     actually reports on that port
+   2) glm-4.7-flash
+   3) other (enter a model name)
+Select [1-3, default 1]:
+Code agent:
+   1) Claude Code (default)
+   ...
+   6) Pi coding agent
+Select [1-6, default 1]:
+
+Optional settings (press Enter to accept the default):
+Instance name (empty = auto-derived from workspace):
+Extra agent flags (empty = none):
+Add env var (empty = done):                  ← repeat KEY=VALUE until empty
+Use an ephemeral in-memory (tmpfs) workspace instead? [y/N]:
+
+=== Configuration ===
+  Agent:     Claude Code (claude)
+  ...
+Proceed [Y/n]:
+```
+
+Details:
+
+- **Flags and config act as defaults** — `-i` combines with them, so
+  `cloma -i -m glm-4.7-flash --agent pi` only prompts for what you did not
+  already provide.
+- **The model list is live** — it is fetched from the Ollama instance on the
+  chosen port; a model name entered manually is verified against it. If
+  Ollama is not reachable, the model is entered as free text and checked
+  later during the preflight.
+- **Workspace paths** accept `.`, `~` and relative paths; a path that does
+  not exist triggers an offer to create it.
+- **Empty input accepts the default** everywhere; Ctrl-C (or declining the
+  final `Proceed`) aborts without creating anything.
 
 ### Setting environment variables in the sandbox
 
@@ -374,6 +435,40 @@ cloma --agent junie \
   --env 'JUNIE_FASTER_MODEL=qwen2.5-coder:1.5b'
 ```
 
+When `--agent pi` is used, cloma installs the **Pi coding agent**
+([pi.dev](https://pi.dev)) — a minimal terminal coding harness — via its
+official installer (`curl -fsSL https://pi.dev/install.sh | sh`, which runs
+non-interactively inside the sandbox) and writes a custom provider to
+`~/.pi/agent/models.json` inside the sandbox. The provider targets the local
+relay (which forwards to the host Ollama using the OpenAI-compatible `/v1`
+chat-completions endpoint) and is selected with `pi --model ollama/<model>`.
+Pi has no documented flag or environment variable for a custom base URL, so
+`models.json` is the supported way to drive it from a local Ollama instance; a
+dummy API key (`ollama`) satisfies Pi's auth-presence requirement since Ollama
+ignores it, and the `compat` flags disable the `developer` role and
+`reasoning_effort` request fields that Ollama's OpenAI-compatible server
+rejects. Pi is a Node.js application (requires Node.js 22.19+ and npm), so
+like Kimi Code, OpenClaw and Junie it uses the shared local relay to bridge
+its Node fetch to the host Ollama through the non-tunneling proxy; Node.js 22
+and `python3` are installed during provisioning. cloma also merges safe
+defaults into `~/.pi/agent/settings.json` (`defaultProjectTrust: always` so
+the interactive project-trust prompt does not block startup, the Ollama
+provider as the default model, install telemetry off) without overwriting
+values you set via `/settings`.
+
+Tune Pi from cloma with `--env` (each `KEY=VALUE`):
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `OLLAMA_RELAY_PORT` | `18999` | Local relay port (`KIMI_RELAY_PORT` is honored as a legacy fallback) |
+| `OLLAMA_RELAY_UPSTREAM` | `http://host.docker.internal:11434` | Where the relay forwards to |
+| `PI_SKIP_VERSION_CHECK` | `1` | Set `0` to let Pi probe pi.dev for updates at startup |
+
+```bash
+# Pi coding agent against a specific Ollama model
+cloma --agent pi -m glm-4.7-flash
+```
+
 #### Web search providers
 
 Web search is enabled by default with `OPENCLAW_WEB_SEARCH_PROVIDER=ollama`.
@@ -444,9 +539,10 @@ the env var, so it stays out of the on-disk config).
 | `--model` | `-m` | `glm-5:cloud` | AI model to use |
 | `--port` | `-p` | `11434` | Ollama port |
 | `--flags` | `-f` | (empty) | Additional agent flags |
-| `--agent` | | `claude` | Code agent: `claude` (Claude Code), `grok` (Grok Build), `kimi` (Kimi Code), `openclaw` (OpenClaw) or `junie` (Junie CLI) |
+| `--agent` | | `claude` | Code agent: `claude` (Claude Code), `grok` (Grok Build), `kimi` (Kimi Code), `openclaw` (OpenClaw), `junie` (Junie CLI) or `pi` (Pi coding agent) |
 | `--name` | `-n` | (auto) | Name this cloma instance (overrides the workspace-derived sandbox name) |
 | `--env` | `-e` | (empty) | Environment variable to set in the sandbox (`KEY=VALUE`); repeatable |
+| `--interactive` | `-i` | off | Fill in options interactively: prompt for required parameters (workspace, port, model, agent), then optional ones |
 | `--tempfs` | | off | Use an ephemeral in-memory (tmpfs) workspace on the host instead of the local directory (falls back to a `/tmp` dir on macOS) |
 | `--tempfs-size` | | `1g` | Size of the tmpfs workspace (e.g. `1g`, `512m`); Linux tmpfs only |
 
@@ -724,10 +820,12 @@ each agent's section:
 - Junie: `JUNIE_FASTER_MODEL`, `JUNIE_TEMPERATURE`, `JUNIE_THEME`,
   `OLLAMA_RELAY_PORT`, `OLLAMA_RELAY_UPSTREAM` — see
   [the Junie section](#setting-environment-variables-in-the-sandbox).
+- Pi: `OLLAMA_RELAY_PORT`, `OLLAMA_RELAY_UPSTREAM`, `PI_SKIP_VERSION_CHECK` —
+  see [the Pi section](#setting-environment-variables-in-the-sandbox).
 
 | Variable | Description |
 |----------|-------------|
-| `CLOMA_AGENT` | Code agent to run: `claude` (default), `grok`, `kimi`, `openclaw` or `junie` |
+| `CLOMA_AGENT` | Code agent to run: `claude` (default), `grok`, `kimi`, `openclaw`, `junie` or `pi` |
 | `CLOMA_MODEL` | AI model to use (default: `glm-5:cloud`) |
 | `OLLAMA_PORT` | Host Ollama port (default: `11434`) |
 | `OLLAMA_URL` | Ollama base URL (default: `http://localhost:11434`) |

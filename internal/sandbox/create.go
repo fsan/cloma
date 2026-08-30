@@ -106,7 +106,7 @@ fi
 
 # Install the requested agent CLI if not present.
 # CLOMA_AGENT selects which agent to install: "claude" (default), "grok",
-# "kimi", "openclaw" or "junie".
+# "kimi", "openclaw", "junie" or "pi".
 CLOMA_AGENT="${CLOMA_AGENT:-claude}"
 case "$CLOMA_AGENT" in
   grok)
@@ -189,6 +189,41 @@ case "$CLOMA_AGENT" in
     # through cloma's non-tunneling proxy, so ensure python3 is present.
     if ! command -v junie >/dev/null 2>&1; then
       curl -fsSL https://junie.jetbrains.com/install-eap.sh | bash
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y --no-install-recommends python3
+      rm -rf /var/lib/apt/lists/*
+    fi
+    ;;
+  pi)
+    # Pi coding agent (pi.dev). Pi is a Node.js application (npm package
+    # @earendil-works/pi-coding-agent) whose official installer requires
+    # Node.js 22.19+ and npm; the base sandbox image does not guarantee a
+    # new-enough Node, so install Node 22 via NodeSource when missing or
+    # older than 22.19 before running Pi's installer. The installer is
+    # non-interactive when no TTY is attached (provisioning runs headless),
+    # which is how it is invoked here. The agent's start script runs the
+    # shared python3 Ollama relay (same as kimi/openclaw/junie) to bridge
+    # Pi's Node fetch to the host Ollama through cloma's non-tunneling
+    # proxy, so ensure python3 is present too.
+    need_node=0
+    if ! command -v node >/dev/null 2>&1; then
+      need_node=1
+    else
+      node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+      node_minor="$(node -p 'process.versions.node.split(".")[1]' 2>/dev/null || echo 0)"
+      if [ "${node_major}" -lt 22 ] || { [ "${node_major}" -eq 22 ] && [ "${node_minor}" -lt 19 ]; }; then
+        need_node=1
+      fi
+    fi
+    if [ "${need_node}" -eq 1 ]; then
+      curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+      apt-get install -y --no-install-recommends nodejs
+      rm -rf /var/lib/apt/lists/*
+    fi
+    if ! command -v pi >/dev/null 2>&1; then
+      curl -fsSL https://pi.dev/install.sh | sh
     fi
     if ! command -v python3 >/dev/null 2>&1; then
       apt-get update
