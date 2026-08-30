@@ -1,0 +1,13 @@
+{
+  "name": "cloma",
+  "version": "0.1.0",
+  "description": "cloma menu bar app for managing Docker sandboxes",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "icon": "python3 scripts/generate_icon.py",
+    "build": "python3 scripts/build_bundle.py"
+  },
+  "author": "cloma",
+  "license": "MIT"
+}

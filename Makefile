@@ -10,7 +10,7 @@ BUILD_DATE := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
 LDFLAGS := -ldflags "-X $(MODULE)/internal/cmd.Version=$(VERSION) -X $(MODULE)/internal/cmd.GitCommit=$(GIT_COMMIT) -X $(MODULE)/internal/cmd.BuildDate=$(BUILD_DATE)"
 
 .DEFAULT_GOAL := help
-.PHONY: help build install uninstall clean test run doctor shell stop cloma
+.PHONY: help build install uninstall clean test run doctor shell stop cloma build-app install-app clean-app
 
 help:
 	@echo "cloma - Docker Sandbox Manager for Code Agents"
@@ -20,7 +20,7 @@ help:
 	@echo "Building:"
 	@echo "  build       Build the cloma binary (bin/cloma)"
 	@echo "  install     Install cloma to /usr/local/bin"
-	@echo "  uninstall   Remove cloma from /usr/local/bin"
+	@echo "  uninstall   Remove cloma CLI and app from the system"
 	@echo "  clean       Remove build artifacts"
 	@echo "  test        Run tests"
 	@echo ""
@@ -29,6 +29,11 @@ help:
 	@echo "  doctor      Run health checks"
 	@echo "  shell       Open an interactive shell in the sandbox"
 	@echo "  stop        Stop the running sandbox"
+	@echo ""
+	@echo "Menu bar app:"
+	@echo "  build-app   Build the cloma Electron app (electron-app/dist)"
+	@echo "  install-app Build and install the app to the host Applications"
+	@echo "  clean-app   Remove app build artifacts (dist, icons, cache)"
 	@echo ""
 	@echo "Development:"
 	@echo "  cloma       Run cloma with custom ARGS (e.g., make cloma ARGS='list')"
@@ -46,6 +51,8 @@ uninstall:
 	@echo "Removing cloma from /usr/local/bin..."
 	rm -f /usr/local/bin/cloma
 	@echo "Removed: /usr/local/bin/cloma"
+	@echo "Removing cloma app from /Applications..."
+	cd electron-app && ./build-app.sh --uninstall
 
 clean:
 	rm -rf $(BIN_DIR)
@@ -66,6 +73,19 @@ shell: build
 
 stop: build
 	./$(CLOMA_BIN) stop
+
+# Menu bar app targets
+build-app:
+	@echo "Building cloma app..."
+	cd electron-app && ./build-app.sh
+
+install-app:
+	@echo "Building and installing cloma app..."
+	cd electron-app && ./build-app.sh --install
+
+clean-app:
+	@echo "Cleaning cloma app build artifacts..."
+	cd electron-app && ./build-app.sh --clean
 
 # Development helper
 cloma: build

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fsan/cloma/internal/sandbox"
 	"github.com/spf13/cobra"
@@ -27,9 +28,11 @@ func init() {
 
 // SandboxInfo holds information about a sandbox for display
 type SandboxInfo struct {
-	Name      string `json:"name"`
-	Status    string `json:"status"`
-	Workspace string `json:"workspace,omitempty"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	Workspace string    `json:"workspace,omitempty"`
+	Agent     string    `json:"agent,omitempty"`
+	Created   time.Time `json:"created,omitempty"`
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -54,6 +57,13 @@ func runList(cmd *cobra.Command, args []string) error {
 			ws, err := sandbox.GetStoredWorkspace(sb.Name)
 			if err == nil {
 				info.Workspace = ws
+			}
+			// Enrich with the agent and creation time recorded in the registry.
+			if agent, err := sandbox.GetStoredAgent(sb.Name); err == nil {
+				info.Agent = agent
+			}
+			if created, err := sandbox.GetCreationTime(sb.Name); err == nil && !created.IsZero() {
+				info.Created = created
 			}
 			clomaSandboxes = append(clomaSandboxes, info)
 		}
@@ -80,8 +90,8 @@ func outputText(sandboxes []SandboxInfo) error {
 	}
 
 	// Print header
-	fmt.Printf("%-50s %-12s %s\n", "NAME", "STATUS", "WORKSPACE")
-	fmt.Println(strings.Repeat("-", 80))
+	fmt.Printf("%-50s %-12s %-10s %-20s %s\n", "NAME", "STATUS", "AGENT", "CREATED", "WORKSPACE")
+	fmt.Println(strings.Repeat("-", 110))
 
 	// Print sandboxes
 	for _, sb := range sandboxes {
@@ -89,7 +99,15 @@ func outputText(sandboxes []SandboxInfo) error {
 		if workspace == "" {
 			workspace = "<unknown>"
 		}
-		fmt.Printf("%-50s %-12s %s\n", sb.Name, sb.Status, workspace)
+		agent := sb.Agent
+		if agent == "" {
+			agent = "-"
+		}
+		created := "-"
+		if !sb.Created.IsZero() {
+			created = sb.Created.Format("2006-01-02 15:04:05")
+		}
+		fmt.Printf("%-50s %-12s %-10s %-20s %s\n", sb.Name, sb.Status, agent, created, workspace)
 	}
 
 	return nil

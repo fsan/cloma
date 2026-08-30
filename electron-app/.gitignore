@@ -1,0 +1,5 @@
+node_modules/
+dist/
+build/icon.png
+build/trayIconTemplate.png
+build/trayIconTemplate@2x.png

@@ -98,6 +98,92 @@ cloma doctor
 cloma update
 ```
 
+## Menu Bar App (macOS)
+
+cloma ships with an optional Electron app that lives in the macOS
+menu bar. It shows all cloma-managed sandboxes and lets you **start**, **stop**,
+view **logs**, **delete**, and **force-delete** them without opening a terminal.
+
+### Building and installing
+
+From the repository root:
+
+```bash
+# Build the app (produces electron-app/dist/mac-arm64/Cloma.app)
+make build-app
+
+# Build and install it to /Applications (or ~/Applications)
+make install-app
+
+# Remove build artifacts (dist, generated icons)
+make clean-app
+```
+
+Or via the cloma CLI:
+
+```bash
+# Build and install the app
+cloma app install
+
+# Rebuild and reinstall (always rebuilds)
+cloma app update
+
+# Remove the app from /Applications
+cloma app uninstall
+
+# Remove build artifacts (dist, generated icons)
+cloma app clean
+```
+
+To remove both the CLI and the app from the system:
+
+```bash
+make uninstall
+```
+
+The build script downloads the official Electron release directly and assembles
+the `.app` bundle by hand — no `npm` or `node_modules` required. The app
+shells out to the `cloma` and `docker` CLIs, so both must be on your `PATH`.
+
+### Running from the menu bar
+
+Once installed, launch **Cloma** from Applications. A **“C”** icon
+appears in the menu bar. Click it to see your sandboxes and act on them.
+
+### macOS “cannot be opened” / “Launch failed” / Gatekeeper
+
+The bundle is assembled from the official Electron release and then modified
+(swapped `Info.plist`, app files, and icon), which invalidates Electron's
+original code signature. On Apple Silicon the kernel kills unsigned or
+invalidly-signed executables on launch, producing errors like `"Cloma" cannot
+be opened` or `Launchd job spawn failed` (POSIX 111).
+
+Two things are required for the bundle to launch:
+
+1. **Intact framework symlinks.** macOS frameworks use a versioned directory
+   layout with symlinks (`Versions/Current -> A`, top-level `Resources`,
+   `Helpers`, etc. are symlinks into `Versions/Current/`). The build script
+   extracts the Electron zip preserving these symlinks; if they are broken
+   (e.g. extracted with a tool that writes symlinks as regular text files),
+   `codesign` reports "embedded framework contains modified or invalid version"
+   and macOS refuses to launch. Run `make clean-app` to clear the cache and
+   rebuild if you ever see that error.
+
+2. **Inside-out ad-hoc signing with JIT entitlements.** A simple
+   `codesign --force --deep --sign -` is **not sufficient** for Electron on
+   Apple Silicon: the V8 engine requires JIT entitlements, and nested
+   frameworks/helpers must be signed individually (inside-out). `make install-app`
+   and `cloma app install` handle this automatically when run on macOS. If you
+   build inside the Linux sandbox and copy the bundle to the host manually, run
+   on the host afterwards:
+
+```bash
+# Inside-out ad-hoc signing with Electron JIT entitlements:
+electron-app/scripts/sign-app.sh "/Applications/Cloma.app"
+# Clear the quarantine attribute:
+xattr -cr "/Applications/Cloma.app"
+```
+
 ## Commands
 
 ### `cloma run` (default)
@@ -429,7 +515,8 @@ mount on Linux; it is ignored by the `/tmp` fallback.
 
 ### `cloma list`
 
-List all cloma-managed sandboxes.
+List all cloma-managed sandboxes. The output includes the sandbox name,
+status, agent, creation time, and workspace path.
 
 ```bash
 # Human-readable output
@@ -439,10 +526,10 @@ cloma list
 cloma list --json
 
 # Example output:
-# NAME                              STATUS    WORKSPACE
-# --------------------------------------------------------------------------------
-# cloma-myproject-a1b2c3d4          running   myproject
-# cloma-another-project-e5f6g7h8    stopped   another-project
+# NAME                              STATUS    AGENT    CREATED               WORKSPACE
+# --------------------------------------------------------------------------------------------------------------
+# cloma-myproject-a1b2c3d4          running   claude   2026-08-18 15:04:05   myproject
+# cloma-another-project-e5f6g7h8    stopped   grok     2026-08-18 14:22:10   another-project
 ```
 
 ### `cloma shell`
@@ -553,6 +640,29 @@ cloma update --force
 # Use a different repository (e.g. a fork)
 cloma update --repo https://github.com/yourname/cloma.git
 ```
+
+### `cloma app`
+
+Manage the macOS menu bar app.
+
+```bash
+# Build and install the app
+cloma app install
+
+# Rebuild and reinstall (always rebuilds, alias for install --force)
+cloma app update
+
+# Rebuild even when already installed
+cloma app install --force
+
+# Remove the app from /Applications
+cloma app uninstall
+
+# Remove build artifacts (dist, generated icons)
+cloma app clean
+```
+
+See the [Menu Bar App](#menu-bar-app-macos) section for details.
 
 ## Global Flags
 
@@ -703,11 +813,17 @@ cloma doctor
 cloma/
 ├── cmd/cloma/main.go          # Entry point
 ├── internal/
-│   ├── cmd/                   # Cobra commands (run, clean, list, doctor, ...)
+│   ├── cmd/                   # Cobra commands (run, clean, list, doctor, app, ...)
 │   ├── sandbox/               # Docker sandbox ops + embedded start-agent.sh
 │   ├── workspace/             # Workspace resolution, naming, random, tmpfs
 │   ├── ollama/                # Ollama connectivity
 │   └── config/                # Configuration
+├── electron-app/             # macOS menu bar app (Electron)
+│   ├── main.js                # Electron main process (tray, IPC, lifecycle)
+│   ├── preload.js             # Context-isolated IPC bridge
+│   ├── renderer/              # UI (index.html, logs.html, styles, JS)
+│   ├── build-app.sh           # Build + install script
+│   └── scripts/generate_icon.py  # Tray/app icon generator
 ├── image/
 │   └── start-agent.sh         # Mirror of internal/sandbox/start-agent.sh
 ├── go.mod

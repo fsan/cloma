@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>cloma</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="title">
+        <span class="logo">C</span>
+        <span class="name">cloma</span>
+      </div>
+      <button id="refresh-btn" class="icon-btn" title="Refresh">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+      </button>
+    </header>
+
+    <div id="prereqs" class="prereqs hidden">
+      <div id="prereq-cloma" class="prereq-row">
+        <span class="dot dot-warn"></span>
+        <span>cloma CLI not found</span>
+      </div>
+      <div id="prereq-docker" class="prereq-row">
+        <span class="dot dot-warn"></span>
+        <span>docker not found</span>
+      </div>
+    </div>
+
+    <div id="error-banner" class="error-banner hidden"></div>
+
+    <div id="loading" class="loading">Loading sandboxes…</div>
+
+    <div id="controls" class="controls hidden">
+      <div class="control-group">
+        <label for="group-by">Group</label>
+        <select id="group-by" class="select">
+          <option value="none">None</option>
+          <option value="workspace">Workspace</option>
+          <option value="agent">Agent</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label for="sort-by">Sort</label>
+        <select id="sort-by" class="select">
+          <option value="name">Name</option>
+          <option value="created">Creation</option>
+        </select>
+      </div>
+    </div>
+
+    <ul id="sandbox-list" class="sandbox-list"></ul>
+
+    <div id="empty" class="empty hidden">
+      <p>No cloma-managed sandboxes.</p>
+      <p class="muted">Run <code>cloma run</code> to create one.</p>
+    </div>
+
+    <footer class="footer">
+      <span class="muted" id="last-updated"></span>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

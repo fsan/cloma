@@ -71,9 +71,10 @@ func (c *SandboxClient) Create(sandboxName, workspace string) error {
 		return fmt.Errorf("failed to provision sandbox: %w", err)
 	}
 
-	// Record the workspace so a later run with the same name can detect
-	// whether the sandbox should be reused or rebuilt.
-	if err := StoreWorkspace(sandboxName, workspace); err != nil {
+	// Record the workspace (and agent) so a later run with the same name can
+	// detect whether the sandbox should be reused or rebuilt, and so the list
+	// command / menu bar app can group by agent and sort by creation time.
+	if err := StoreMetadata(sandboxName, workspace, c.Agent); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not store workspace mapping: %v\n", err)
 	}
 
