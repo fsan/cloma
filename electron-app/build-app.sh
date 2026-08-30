@@ -99,20 +99,21 @@ fi
 
 # ---- prerequisites ----
 
-need python3
+need uv
 need curl
 
 # ---- generate icons if missing ----
-
+# Pillow is not installed globally; uv run --with fetches it into an
+# ephemeral environment for the duration of the script run.
 if [ ! -f "${APP_DIR}/build/icon.png" ] || [ ! -f "${APP_DIR}/build/trayIconTemplate.png" ]; then
   color_yellow "Generating icons…"
-  (cd "${APP_DIR}" && python3 scripts/generate_icon.py)
+  (cd "${APP_DIR}" && uv run --with pillow scripts/generate_icon.py)
 fi
 
 # ---- build the app ----
 
 color_yellow "Building Electron app…"
-(cd "${APP_DIR}" && python3 scripts/build_bundle.py)
+(cd "${APP_DIR}" && uv run --with pillow scripts/build_bundle.py)
 
 # Locate the produced .app bundle.
 APP_BUNDLE="$(find "${APP_DIR}/dist" -maxdepth 3 -name '*.app' -print -quit 2>/dev/null || true)"
