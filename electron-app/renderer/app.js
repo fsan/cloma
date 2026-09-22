@@ -143,6 +143,29 @@ function renderSandboxItem(sb) {
   const metaParts = [];
   if (agent) metaParts.push(`<span class="meta-tag meta-agent">${agent}</span>`);
   if (created) metaParts.push(`<span class="meta-tag meta-created" title="${escapeHtml(sb.created)}">${escapeHtml(created)}</span>`);
+
+  // Network policy recorded at the last launch: allowed entries as green
+  // tags, blocked ones as red. Host ports render as ":<port>" (reachable
+  // inside the sandbox as host.docker.internal:<port>), blocked ports as
+  // "!<port>", allowed domains as "+<domain>", blocked as "-<domain>".
+  const np = sb.network_policy;
+  if (np) {
+    const netParts = ['<span class="meta-tag meta-net-label">net</span>'];
+    const allowPorts = (np.allow && np.allow.host_ports) || [];
+    const blockPorts = (np.block && np.block.host_ports) || [];
+    const allowDomains = (np.allow && np.allow.domains) || [];
+    const blockDomains = (np.block && np.block.domains) || [];
+    allowPorts.forEach((p) =>
+      netParts.push(`<span class="meta-tag meta-net-allow" title="Allowed host port (reachable as host.docker.internal:${p})">:${p}</span>`));
+    blockPorts.forEach((p) =>
+      netParts.push(`<span class="meta-tag meta-net-block" title="Blocked host port">!${p}</span>`));
+    allowDomains.forEach((d) =>
+      netParts.push(`<span class="meta-tag meta-net-allow" title="Allowed domain">+${escapeHtml(d)}</span>`));
+    blockDomains.forEach((d) =>
+      netParts.push(`<span class="meta-tag meta-net-block" title="Blocked domain">-${escapeHtml(d)}</span>`));
+    if (netParts.length > 1) metaParts.push(`<span class="sandbox-net">${netParts.join(' ')}</span>`);
+  }
+
   const meta = metaParts.length ? `<div class="sandbox-meta">${metaParts.join(' ')}</div>` : '';
 
   return `

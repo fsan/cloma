@@ -318,6 +318,60 @@ cloma --flags '--yolo' --model 'kimi-k3:cloud' \
 User-supplied variables are applied last, so they can override the cloma-managed
 defaults (e.g. `CLOMA_MODEL`) when needed.
 
+### Network policy (`--network-policy` / `-N`)
+
+Sandbox network access to the host is default-deny: the Docker sandbox
+proxy blocks everything except the ports cloma registers at launch — by
+default only the Ollama port (reachable inside the sandbox as
+`host.docker.internal:<port>`). That's why `curl http://host.docker.internal:8881`
+from inside the sandbox fails with `blocked by network policy`, and why
+`sbx policy allow` from inside cannot help: host access can only be granted
+from the host side.
+
+Pass `--network-policy` (short `-N`) with a YAML file to declare additional
+host ports the sandbox may reach, plus external domains to allow or block:
+
+```yaml
+# policy.yaml
+allow:
+  # Host ports reachable as host.docker.internal:<port> inside the sandbox
+  host_ports: [8881, 3000]
+  # External internet domains the sandbox may reach
+  domains: [api.github.com, registry.npmjs.org]
+block:
+  # Host ports that must NOT be reachable. Blocking the Ollama port
+  # revokes cloma's automatic allow — the agent will lose its model backend.
+  host_ports: []
+  # External domains the sandbox may not reach (otherwise reachable via
+  # the sandbox microVM's outbound egress)
+  domains: [example.com]
+```
+
+```bash
+cloma -N policy.yaml
+```
+
+Semantics:
+
+- **Host ports are default-deny**: `block.host_ports` simply means "do not
+  allow" — useful only to revoke cloma's automatic Ollama allow (which
+  produces a loud warning, since the agent can no longer reach its model).
+- **Domains are default-allow** (the sandbox has direct internet egress),
+  so `allow.domains` mostly matters on restricted setups, while
+  `block.domains` actively denies egress via the sandbox's `sbx policy` CLI.
+- Block entries win: the same port or domain in both sections is rejected
+  at load time as a likely mistake.
+- The file is validated before anything is created — typos (strict YAML
+  keys), out-of-range ports, and host-style entries in `domains` (use
+  `host_ports` for `localhost`/`host.docker.internal` targets) fail fast.
+- Entries that cannot be applied (e.g. the installed Docker sandbox CLI
+  does not support denying a domain) are reported as warnings at launch
+  instead of aborting.
+
+Domain allow/block support depends on the Docker Desktop version — the
+verified mechanism is host ports; domains fall back to `sbx policy allow`,
+then to a best-effort `sbx policy deny`/`block`, warning if neither works.
+
 When `--agent grok` is used, cloma writes a `~/.grok/config.toml` inside the
 sandbox pointing Grok Build at the host Ollama instance (OpenAI-compatible
 `/v1` endpoint) and selects the model via `grok -m ollama`. No `grok login` is

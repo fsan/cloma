@@ -22,6 +22,7 @@ var (
 	runAgent         string
 	runName          string
 	runEnv           []string
+	runNetworkPolicy string
 	runTempfs        bool
 	runTempfsSize    string
 	runTempfsMounted bool // set during run when --tempfs produced a real tmpfs mount
@@ -74,6 +75,11 @@ func addRunFlags(cmd *cobra.Command) {
 	// --env can be repeated to inject multiple environment variables into the
 	// sandbox. Each value must be in KEY=VALUE form, e.g. --env 'DEBUG=1'.
 	cmd.Flags().StringArrayVarP(&runEnv, "env", "e", nil, "Environment variable to set in the sandbox (KEY=VALUE); repeatable")
+	// --network-policy points at a YAML file declaring which host ports and
+	// external domains the sandbox may reach, and which to block. Host ports
+	// are reachable as host.docker.internal:<port> once allowed; by default
+	// only the Ollama port is allowed.
+	cmd.Flags().StringVarP(&runNetworkPolicy, "network-policy", "N", "", "Path to a YAML file with the sandbox network policy (allow/block host ports and domains)")
 	// --tempfs replaces the local directory with an ephemeral workspace so the
 	// sandbox never touches the real filesystem. On Linux (with root or
 	// passwordless sudo) it mounts a real in-memory tmpfs; on macOS or without
@@ -129,6 +135,17 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if !isValidEnvAssignment(e) {
 			return fmt.Errorf("invalid --env value %q: expected KEY=VALUE form (e.g. --env 'DEBUG=1')", e)
 		}
+	}
+
+	// Load the network policy, if given, before creating anything so a
+	// malformed file fails fast instead of after sandbox provisioning.
+	var networkPolicy *sandbox.NetworkPolicy
+	if runNetworkPolicy != "" {
+		p, err := sandbox.LoadNetworkPolicy(runNetworkPolicy)
+		if err != nil {
+			return fmt.Errorf("--network-policy: %w", err)
+		}
+		networkPolicy = p
 	}
 
 	// Resolve the workspace and derive the sandbox name. With --tempfs the
@@ -271,13 +288,23 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Configure network proxy for host access
+	// Configure network proxy for host access. Without --network-policy
+	// this allows just the Ollama port, as before; with it, the policy
+	// file's allow/block entries are applied (block wins over allow).
 	if verbose > 0 {
-		fmt.Printf("Configuring network proxy for host port %d...\n", ollamaPort)
+		fmt.Printf("Configuring network policy...\n")
 	}
-	if err := sandboxClient.ConfigureProxy(sandboxName, ollamaPort); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Could not configure network proxy.\n")
-		fmt.Fprintf(os.Stderr, "Sandbox may not be able to reach Ollama on host.\n")
+	if networkPolicy != nil {
+		fmt.Printf("Network policy: %s\n", networkPolicy.Summary())
+	}
+	for _, warning := range sandboxClient.ApplyNetworkPolicy(sandboxName, networkPolicy, ollamaPort) {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+	}
+	// Record the effective policy in the registry so `cloma list` and the
+	// menu bar app can show what the sandbox may reach. A nil policy still
+	// records the default (Ollama port only).
+	if err := sandbox.StoreNetworkPolicy(sandboxName, networkPolicy.Effective(ollamaPort)); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not record network policy: %v\n", err)
 	}
 
 	// Launch agent

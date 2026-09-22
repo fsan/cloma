@@ -33,6 +33,11 @@ type SandboxInfo struct {
 	Workspace string    `json:"workspace,omitempty"`
 	Agent     string    `json:"agent,omitempty"`
 	Created   time.Time `json:"created,omitempty"`
+
+	// NetworkPolicy is the effective network policy recorded at the last
+	// launch (allowed/blocked host ports and domains). Nil when the
+	// sandbox predates network policies.
+	NetworkPolicy *sandbox.NetworkPolicy `json:"network_policy,omitempty"`
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -58,12 +63,16 @@ func runList(cmd *cobra.Command, args []string) error {
 			if err == nil {
 				info.Workspace = ws
 			}
-			// Enrich with the agent and creation time recorded in the registry.
+			// Enrich with the agent, creation time, and effective network
+			// policy recorded in the registry.
 			if agent, err := sandbox.GetStoredAgent(sb.Name); err == nil {
 				info.Agent = agent
 			}
 			if created, err := sandbox.GetCreationTime(sb.Name); err == nil && !created.IsZero() {
 				info.Created = created
+			}
+			if policy, err := sandbox.GetStoredNetworkPolicy(sb.Name); err == nil && policy != nil {
+				info.NetworkPolicy = policy
 			}
 			clomaSandboxes = append(clomaSandboxes, info)
 		}
@@ -90,8 +99,8 @@ func outputText(sandboxes []SandboxInfo) error {
 	}
 
 	// Print header
-	fmt.Printf("%-50s %-12s %-10s %-20s %s\n", "NAME", "STATUS", "AGENT", "CREATED", "WORKSPACE")
-	fmt.Println(strings.Repeat("-", 110))
+	fmt.Printf("%-50s %-12s %-10s %-20s %-28s %s\n", "NAME", "STATUS", "AGENT", "CREATED", "POLICY", "WORKSPACE")
+	fmt.Println(strings.Repeat("-", 140))
 
 	// Print sandboxes
 	for _, sb := range sandboxes {
@@ -107,8 +116,39 @@ func outputText(sandboxes []SandboxInfo) error {
 		if !sb.Created.IsZero() {
 			created = sb.Created.Format("2006-01-02 15:04:05")
 		}
-		fmt.Printf("%-50s %-12s %-10s %-20s %s\n", sb.Name, sb.Status, agent, created, workspace)
+		fmt.Printf("%-50s %-12s %-10s %-20s %-28s %s\n", sb.Name, sb.Status, agent, created, formatPolicy(sb.NetworkPolicy), workspace)
 	}
 
 	return nil
+}
+
+// formatPolicy renders the effective network policy as a compact string:
+// allowed host ports as ":<port>", blocked host ports as "!<port>", allowed
+// domains as "+<domain>", and blocked domains as "-<domain>". Returns "-"
+// when no policy was recorded (sandbox predates network policies).
+func formatPolicy(p *sandbox.NetworkPolicy) string {
+	if p == nil {
+		return "-"
+	}
+	var parts []string
+	if p.Allow != nil {
+		for _, port := range p.Allow.HostPorts {
+			parts = append(parts, fmt.Sprintf(":%d", port))
+		}
+		for _, domain := range p.Allow.Domains {
+			parts = append(parts, "+"+domain)
+		}
+	}
+	if p.Block != nil {
+		for _, port := range p.Block.HostPorts {
+			parts = append(parts, fmt.Sprintf("!%d", port))
+		}
+		for _, domain := range p.Block.Domains {
+			parts = append(parts, "-"+domain)
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, " ")
 }

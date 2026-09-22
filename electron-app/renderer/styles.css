@@ -327,6 +327,31 @@ body {
   background: rgba(59, 130, 246, 0.1);
 }
 
+/* Network policy tags: "net" label, allowed entries (green), blocked (red).
+   Rendered inline in their own group so they read as one unit. */
+.sandbox-net {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.meta-net-label {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.meta-net-allow {
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.meta-net-block {
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.12);
+}
+
 .sandbox-workspace {
   font-size: 11px;
   color: var(--text-muted);

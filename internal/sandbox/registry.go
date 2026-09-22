@@ -39,7 +39,8 @@ func registryPath(sandboxName string) string {
 }
 
 // sandboxMeta is the JSON envelope stored in each registry file. It records
-// the workspace path, the agent type, and the creation time for a sandbox.
+// the workspace path, the agent type, the creation time, and the effective
+// network policy for a sandbox.
 //
 // For backward compatibility, older registry files contain only the workspace
 // path as plain text. GetMetadata detects this and treats the whole file
@@ -49,6 +50,12 @@ type sandboxMeta struct {
 	Workspace string    `json:"workspace"`
 	Agent     string    `json:"agent,omitempty"`
 	Created   time.Time `json:"created,omitempty"`
+
+	// NetworkPolicy is the effective network policy applied at the last
+	// launch (host ports allowed/blocked plus domains), so `cloma list`
+	// and the menu bar app can show what the sandbox may reach. Nil for
+	// sandboxes launched before policies were recorded.
+	NetworkPolicy *NetworkPolicy `json:"network_policy,omitempty"`
 }
 
 // StoreWorkspace records the workspace path associated with a sandbox name.
@@ -105,6 +112,41 @@ func GetStoredWorkspace(sandboxName string) (string, error) {
 		return "", err
 	}
 	return meta.Workspace, nil
+}
+
+// StoreNetworkPolicy records the effective network policy for a sandbox
+// name, preserving the other metadata fields. It overwrites any previously
+// recorded policy — the registry always reflects the last launch.
+func StoreNetworkPolicy(sandboxName string, policy *NetworkPolicy) error {
+	meta, err := readMeta(sandboxName)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read metadata for sandbox %s: %w", sandboxName, err)
+	}
+	meta.NetworkPolicy = policy
+
+	data, err := jsonMarshal(meta)
+	if err != nil {
+		return fmt.Errorf("failed to encode metadata for sandbox %s: %w", sandboxName, err)
+	}
+	dir := filepath.Dir(registryPath(sandboxName))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create sandbox registry directory: %w", err)
+	}
+	if err := os.WriteFile(registryPath(sandboxName), data, 0644); err != nil {
+		return fmt.Errorf("failed to store network policy for sandbox %s: %w", sandboxName, err)
+	}
+	return nil
+}
+
+// GetStoredNetworkPolicy returns the effective network policy recorded for a
+// sandbox name. Returns nil and nil when no record exists or no policy was
+// recorded (e.g. the sandbox predates network policies).
+func GetStoredNetworkPolicy(sandboxName string) (*NetworkPolicy, error) {
+	meta, err := GetMetadata(sandboxName)
+	if err != nil {
+		return nil, err
+	}
+	return meta.NetworkPolicy, nil
 }
 
 // GetStoredAgent returns the agent recorded for a sandbox name.
