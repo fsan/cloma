@@ -1,9 +1,11 @@
 package sandbox
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 // Sandbox represents a Docker Desktop sandbox instance.
@@ -22,8 +24,48 @@ type Sandbox struct {
 }
 
 // sandboxListResponse represents the JSON response from `docker sandbox ls --json`.
+//
+// Newer CLI builds (and the standalone `sbx` successor) wrap the list under
+// "sandboxes"; older Docker Desktop builds used "vms". Both are accepted.
 type sandboxListResponse struct {
-	VMs []Sandbox `json:"vms"`
+	Sandboxes []Sandbox `json:"sandboxes"`
+	VMs       []Sandbox `json:"vms"`
+}
+
+// entries returns the sandbox list regardless of which key carried it.
+func (r sandboxListResponse) entries() []Sandbox {
+	if r.Sandboxes != nil {
+		return r.Sandboxes
+	}
+	return r.VMs
+}
+
+// parseSandboxList decodes the output of `docker sandbox ls --json`.
+//
+// Some CLI versions print a daemon bootstrap banner (for example
+// "Starting sandboxd daemon...") to stdout *before* the JSON document, so the
+// raw output cannot be unmarshalled directly. We therefore try the whole
+// output first, then fall back to the first line that looks like the start of a
+// JSON document.
+func parseSandboxList(output []byte) ([]Sandbox, error) {
+	var response sandboxListResponse
+	if err := json.Unmarshal(output, &response); err == nil {
+		return response.entries(), nil
+	}
+
+	lines := bytes.Split(output, []byte("\n"))
+	for i, line := range lines {
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+			continue
+		}
+		candidate := bytes.Join(lines[i:], []byte("\n"))
+		if err := json.Unmarshal(candidate, &response); err == nil {
+			return response.entries(), nil
+		}
+	}
+
+	return nil, fmt.Errorf("failed to parse sandbox list: no JSON document found in output %q", strings.TrimSpace(string(output)))
 }
 
 // List returns all Docker Desktop sandboxes.
@@ -35,12 +77,7 @@ func List() ([]Sandbox, error) {
 		return nil, fmt.Errorf("failed to list sandboxes: %w", err)
 	}
 
-	var response sandboxListResponse
-	if err := json.Unmarshal(output, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse sandbox list: %w", err)
-	}
-
-	return response.VMs, nil
+	return parseSandboxList(output)
 }
 
 // Exists checks if a sandbox with the given name exists.
