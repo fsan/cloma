@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // Create creates a new sandbox with the given name for the specified workspace.
@@ -41,29 +42,39 @@ func (c *SandboxClient) Create(sandboxName, workspace string) error {
 		}
 	}
 
-	// Create the sandbox
-	var cmd *exec.Cmd
+	// Create the sandbox. `sbx` and the legacy plugin both take the agent
+	// name and the workspace path positionally. Only the legacy plugin needs
+	// --load-local-template alongside -t; sbx templates are already loaded.
+	backend := DetectBackend()
+	args := []string{"create", "--name", sandboxName}
 	if c.templateExists() {
-		cmd = exec.Command("docker", "sandbox", "create",
-			"--name", sandboxName,
-			"--load-local-template",
-			"-t", c.TemplateTag,
-			"claude",
-			workspace,
-		)
-	} else {
-		cmd = exec.Command("docker", "sandbox", "create",
-			"--name", sandboxName,
-			"claude",
-			workspace,
-		)
+		if !backend.IsSBX() {
+			args = append(args, "--load-local-template")
+		}
+		args = append(args, "-t", c.TemplateTag)
 	}
+	// Non-Claude agents (grok, kimi, openclaw, junie, pi, dsh) are not
+	// built-in sbx agents, so every sandbox is created from the claude base
+	// image and the provision script installs the selected agent.
+	args = append(args, "claude", workspace)
+	cmd := backend.Command(args...)
 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to create sandbox: %w", err)
+	}
+
+	// Grant host access before provisioning. The sandbox has no direct egress
+	// to the host, so the agent install (npm/curl) can fail with ECONNREFUSED
+	// until the Ollama port is reachable. The run command applies the full
+	// network policy later; this early call only needs to open that path for
+	// the install.
+	if c.OllamaPort > 0 {
+		if err := c.ConfigureProxy(sandboxName, c.OllamaPort); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not configure sandbox network proxy before provisioning: %v\n", err)
+		}
 	}
 
 	// Provision with start script
@@ -81,10 +92,27 @@ func (c *SandboxClient) Create(sandboxName, workspace string) error {
 	return nil
 }
 
-// templateExists checks if the template image exists.
+// templateExists checks if the warm template image exists.
+//
+// sbx keeps templates in its own store and exposes them as names via
+// `sbx template ls -q`; the legacy plugin reused Docker's image store, so the
+// Docker image inspect is kept for that backend only.
 func (c *SandboxClient) templateExists() bool {
-	cmd := exec.Command("docker", "image", "inspect", c.TemplateTag)
-	return cmd.Run() == nil
+	backend := DetectBackend()
+	if !backend.IsSBX() {
+		return exec.Command("docker", "image", "inspect", c.TemplateTag).Run() == nil
+	}
+
+	output, err := backend.Command("template", "ls", "-q").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.TrimSpace(line) == c.TemplateTag {
+			return true
+		}
+	}
+	return false
 }
 
 // provisionSandbox installs the agent start script into the sandbox.
@@ -106,7 +134,7 @@ fi
 
 # Install the requested agent CLI if not present.
 # CLOMA_AGENT selects which agent to install: "claude" (default), "grok",
-# "kimi", "openclaw", "junie" or "pi".
+# "kimi", "openclaw", "junie", "pi" or "dsh".
 CLOMA_AGENT="${CLOMA_AGENT:-claude}"
 case "$CLOMA_AGENT" in
   grok)
@@ -231,6 +259,54 @@ case "$CLOMA_AGENT" in
       rm -rf /var/lib/apt/lists/*
     fi
     ;;
+  dsh)
+    # DeepSeek Harness (dsh) is a Node.js application (npm package
+    # @deepseek-ai/dsh) requiring Node.js ^22.19 || >=24. The base sandbox
+    # image does not guarantee a new-enough Node, so install Node 22 via
+    # NodeSource when missing or older than 22.19 before installing dsh
+    # globally with npm. The agent's start script runs the shared python3
+    # Ollama relay (same as kimi/openclaw/junie/pi) to bridge dsh's Node fetch
+    # to the host Ollama through cloma's non-tunneling proxy, so ensure python3
+    # is present too.
+    need_node=0
+    if ! command -v node >/dev/null 2>&1; then
+      need_node=1
+    else
+      node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+      node_minor="$(node -p 'process.versions.node.split(".")[1]' 2>/dev/null || echo 0)"
+      if [ "${node_major}" -lt 22 ] || { [ "${node_major}" -eq 22 ] && [ "${node_minor}" -lt 19 ]; }; then
+        need_node=1
+      fi
+    fi
+    if [ "${need_node}" -eq 1 ]; then
+      curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+      apt-get install -y --no-install-recommends nodejs
+      rm -rf /var/lib/apt/lists/*
+    fi
+    if ! command -v dsh >/dev/null 2>&1; then
+      # The proxy can take a moment to accept connections right after the
+      # sandbox boots; retry so a transient ECONNREFUSED does not fail
+      # provisioning.
+      dsh_installed=0
+      for attempt in 1 2 3 4 5; do
+        if npm install -g @deepseek-ai/dsh; then
+          dsh_installed=1
+          break
+        fi
+        echo "npm install attempt ${attempt} failed; retrying in 5s..." >&2
+        sleep 5
+      done
+      if [ "${dsh_installed}" -ne 1 ]; then
+        echo "failed to install @deepseek-ai/dsh after retries" >&2
+        exit 1
+      fi
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y --no-install-recommends python3
+      rm -rf /var/lib/apt/lists/*
+    fi
+    ;;
   claude|*)
     if ! command -v claude >/dev/null 2>&1; then
       curl -fsSL https://claude.ai/install.sh | bash
@@ -249,8 +325,14 @@ chown agent:agent /usr/local/bin/start-agent.sh 2>/dev/null || true
 printf "Start script installed successfully\n"
 `
 
-	cmd := exec.Command("docker", "sandbox", "exec",
-		"--privileged",
+	// sbx has no --privileged flag; running as root is the documented way to
+	// perform provisioning work there.
+	backend := DetectBackend()
+	args := []string{"exec"}
+	if !backend.IsSBX() {
+		args = append(args, "--privileged")
+	}
+	args = append(args,
 		"-u", "root",
 		"-e", "CLOMA_AGENT_VERSION="+c.AgentVersion,
 		"-e", "CLOMA_AGENT="+c.Agent,
@@ -258,6 +340,7 @@ printf "Start script installed successfully\n"
 		sandboxName,
 		"bash", "-lc", provisionScript,
 	)
+	cmd := backend.Command(args...)
 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

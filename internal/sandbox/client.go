@@ -1,13 +1,13 @@
-// Package sandbox provides Docker Desktop sandbox management functionality for cloma.
-// It wraps the `docker sandbox` CLI commands for creating, managing, and interacting
-// with Docker Desktop sandbox containers.
+// Package sandbox provides sandbox management functionality for cloma.
+// It wraps the standalone `sbx` CLI, falling back to the legacy
+// `docker sandbox` plugin, for creating, managing, and interacting with
+// sandbox containers.
 package sandbox
 
 import (
 	_ "embed"
 	"encoding/base64"
 	"errors"
-	"os/exec"
 )
 
 //go:embed start-agent.sh
@@ -21,6 +21,7 @@ const (
 	AgentOpenClaw = "openclaw"
 	AgentJunie    = "junie"
 	AgentPi       = "pi"
+	AgentDsh      = "dsh"
 )
 
 // SandboxClient holds configuration for sandbox operations.
@@ -35,9 +36,17 @@ type SandboxClient struct {
 
 	// Agent is the code agent to launch inside the sandbox.
 	// Supported values: "claude" (Claude Code, default), "grok" (Grok Build),
-	// "kimi" (Kimi Code), "openclaw" (OpenClaw), "junie" (Junie CLI) and
-	// "pi" (Pi coding agent).
+	// "kimi" (Kimi Code), "openclaw" (OpenClaw), "junie" (Junie CLI),
+	// "pi" (Pi coding agent) and "dsh" (DeepSeek Harness).
 	Agent string
+
+	// OllamaPort is the host port the sandbox must be able to reach for its
+	// model backend. It is registered with the sandbox network proxy before the
+	// agent is provisioned, so the agent's install (npm/curl) can reach the
+	// internet through that proxy — the sandbox has no direct egress, so
+	// without this the install fails with ECONNREFUSED to the proxy.
+	// Default: 11434.
+	OllamaPort int
 }
 
 // Option is a function that configures a SandboxClient.
@@ -65,6 +74,14 @@ func WithAgent(agent string) Option {
 	}
 }
 
+// WithOllamaPort sets the host port registered with the sandbox network proxy
+// before provisioning so the agent install can reach the internet.
+func WithOllamaPort(port int) Option {
+	return func(c *SandboxClient) {
+		c.OllamaPort = port
+	}
+}
+
 // NewClient creates a new SandboxClient with default configuration.
 // Options can be passed to customize the client.
 func NewClient(opts ...Option) *SandboxClient {
@@ -72,6 +89,7 @@ func NewClient(opts ...Option) *SandboxClient {
 		TemplateTag:  "claude-code-sandbox-template:warm",
 		AgentVersion: "latest",
 		Agent:        AgentClaude,
+		OllamaPort:   11434,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -95,6 +113,8 @@ func NormalizeAgent(agent string) string {
 		return AgentJunie
 	case AgentPi:
 		return AgentPi
+	case AgentDsh:
+		return AgentDsh
 	default:
 		return AgentClaude
 	}
@@ -105,15 +125,25 @@ func (c *SandboxClient) StartScriptBase64() string {
 	return base64.StdEncoding.EncodeToString(startScript)
 }
 
-// ErrSandboxPluginNotAvailable is returned when the Docker sandbox plugin is not installed.
-var ErrSandboxPluginNotAvailable = errors.New("docker sandbox plugin not available")
+// ErrSandboxCLINotAvailable is returned when neither the standalone `sbx` CLI
+// nor the legacy `docker sandbox` plugin is available.
+var ErrSandboxCLINotAvailable = errors.New("sandbox CLI not available (install sbx: https://docs.docker.com/ai/sandboxes/)")
 
-// EnsureSandboxPlugin verifies that the Docker Desktop sandbox plugin is available.
-// It returns ErrSandboxPluginNotAvailable if the plugin is not installed or not working.
-func EnsureSandboxPlugin() error {
-	cmd := exec.Command("docker", "sandbox", "version")
-	if err := cmd.Run(); err != nil {
-		return ErrSandboxPluginNotAvailable
+// EnsureSandboxCLI verifies that a usable sandbox CLI is available: the
+// standalone `sbx` CLI when installed, otherwise the legacy `docker sandbox`
+// plugin. It returns ErrSandboxCLINotAvailable when neither works.
+func EnsureSandboxCLI() error {
+	if err := DetectBackend().Command("version").Run(); err != nil {
+		return ErrSandboxCLINotAvailable
 	}
 	return nil
+}
+
+// SandboxKind reports which sandbox backend cloma will drive ("sbx" or
+// "docker"), for display in diagnostics.
+func SandboxKind() string {
+	if DetectBackend().IsSBX() {
+		return "sbx"
+	}
+	return "docker sandbox"
 }

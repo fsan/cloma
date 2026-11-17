@@ -31,15 +31,25 @@ function debug(msg) {
   if (process.env.CLOMA_DEBUG) console.log(line);
 }
 
-// Common install locations for cloma and docker on macOS. GUI apps get a
-// minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that excludes /usr/local/bin
-// and /opt/homebrew/bin, so we search these explicitly.
+// Common install locations for cloma, the sbx sandbox CLI, and docker on
+// macOS. GUI apps get a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that
+// excludes /usr/local/bin and /opt/homebrew/bin, so we search these
+// explicitly.
 const CLOMA_SEARCH_PATHS = [
   '/usr/local/bin/cloma',
   '/opt/homebrew/bin/cloma',
   path.join(process.env.HOME || '', '.local', 'bin', 'cloma'),
   path.join(process.resourcesPath || '', 'bin', 'cloma'),
 ];
+// sbx is the standalone Docker Sandboxes CLI that replaced the
+// `docker sandbox` plugin.
+const SANDBOX_SEARCH_PATHS = [
+  '/usr/local/bin/sbx',
+  '/opt/homebrew/bin/sbx',
+  path.join(process.env.HOME || '', '.local', 'bin', 'sbx'),
+  '/Applications/Docker.app/Contents/Resources/bin/sbx',
+];
+// Docker is only needed as the legacy `docker sandbox` fallback.
 const DOCKER_SEARCH_PATHS = [
   '/usr/local/bin/docker',
   '/opt/homebrew/bin/docker',
@@ -48,6 +58,7 @@ const DOCKER_SEARCH_PATHS = [
 
 let _clomaBin = null;
 let _dockerBin = null;
+let _sandboxBin = null;
 
 // Resolve the cloma binary path. Search known locations, then PATH.
 function clomaBin() {
@@ -71,6 +82,25 @@ function dockerBin() {
   }
   _dockerBin = 'docker';
   return 'docker';
+}
+
+// Resolve the sandbox command backend: { bin, prefix }. The standalone sbx CLI
+// is preferred; older Docker Desktop installs fall back to `docker sandbox`.
+function sandboxBin() {
+  if (_sandboxBin) return _sandboxBin;
+  const dev = process.env.SBX_BIN;
+  if (dev) { _sandboxBin = { bin: dev, prefix: [] }; return _sandboxBin; }
+  for (const p of SANDBOX_SEARCH_PATHS) {
+    try { if (fs.existsSync(p) && fs.statSync(p).isFile()) { _sandboxBin = { bin: p, prefix: [] }; return _sandboxBin; } } catch (e) {}
+  }
+  _sandboxBin = { bin: dockerBin(), prefix: ['sandbox'] };
+  return _sandboxBin;
+}
+
+// Run a sandbox subcommand against the resolved backend.
+function runSandbox(args, opts = {}) {
+  const b = sandboxBin();
+  return runCmd(b.bin, b.prefix.concat(args), opts);
 }
 
 // Run a command and return { stdout, stderr, code }. Times out after 15s.
@@ -189,53 +219,58 @@ async function checkCloma() {
   return { ok: res.code === 0, path: bin, error: res.code !== 0 ? (res.stderr || res.stdout || 'failed to run') : null };
 }
 
-// Check whether docker is available.
-async function checkDocker() {
-  const bin = dockerBin();
-  const res = await runCmd(bin, ['version', '--format', '{{.Server.Version}}']);
-  debug(`checkDocker: bin=${bin} code=${res.code} stderr=${(res.stderr || '').slice(0, 200)}`);
-  return { ok: res.code === 0, path: bin, error: res.code !== 0 ? (res.stderr || res.stdout || 'failed to run') : null };
+// Check whether a sandbox CLI is available.
+async function checkSandboxCLI() {
+  const res = await runSandbox(['version']);
+  const b = sandboxBin();
+  const path = b.prefix.length ? `${b.bin} ${b.prefix.join(' ')}` : b.bin;
+  debug(`checkSandboxCLI: bin=${path} code=${res.code} stderr=${(res.stderr || '').slice(0, 200)}`);
+  return { ok: res.code === 0, path, error: res.code !== 0 ? (res.stderr || res.stdout || 'failed to run') : null };
 }
 
-// Start a sandbox: `docker sandbox exec` wakes a stopped sandbox. We run a
-// trivial command so the sandbox starts without launching an agent.
+// Start a sandbox: `exec` starts a stopped sandbox. We run a trivial command
+// so the sandbox starts without launching an agent.
 async function startSandbox(name) {
-  const res = await runCmd(dockerBin(), ['sandbox', 'exec', name, 'true']);
-  return res;
+  return runSandbox(['exec', name, 'true']);
 }
 
 // Stop a sandbox.
 async function stopSandbox(name) {
-  const res = await runCmd(dockerBin(), ['sandbox', 'stop', name]);
-  return res;
+  return runSandbox(['stop', name]);
 }
 
-// Remove a sandbox (force or not).
+// Remove a sandbox (force or not). `sbx rm` prompts unless --force is passed,
+// so the non-interactive GUI always forces.
 async function removeSandbox(name, force) {
-  const args = ['sandbox', 'rm'];
-  if (force) args.push('--force');
+  const args = ['rm'];
+  if (force || sandboxBin().prefix.length === 0) args.push('--force');
   args.push(name);
-  const res = await runCmd(dockerBin(), args);
-  return res;
+  return runSandbox(args);
 }
 
-// Get logs for a sandbox. `docker sandbox logs` is not a real command, so we
-// stream the container logs via `docker logs`. The sandbox container name is
-// the sandbox name prefixed with the docker-sandbox namespace.
+// Get logs for a sandbox.
+//
+// sbx exposes no log command: exec sessions stream to their caller rather than
+// into a sandbox-wide log. Under sbx we therefore stream the system journal as
+// a best effort. The legacy plugin kept its containers in Docker's namespace,
+// so `docker logs` is still used there.
 async function getLogProcess(name) {
   const env = augmentedEnv();
-  // Try the common sandbox container naming first.
+  const b = sandboxBin();
+
+  if (b.prefix.length === 0) {
+    return spawn(b.bin, ['exec', name, 'journalctl', '--no-pager', '-n', '500', '-f'], { env });
+  }
+
+  // Legacy `docker sandbox`: the container name is usually prefixed.
   const candidates = [name, `docker-sandbox-${name}`, `sandbox-${name}`];
-  // We'll spawn `docker logs -f <candidate>` and let the renderer pick the one
-  // that works. For simplicity, try each in order.
   for (const candidate of candidates) {
     const check = await runCmd(dockerBin(), ['inspect', candidate]);
     if (check.code === 0) {
       return spawn(dockerBin(), ['logs', '-f', '--tail', '500', candidate], { env });
     }
   }
-  // Fallback: use `docker sandbox logs` if the plugin supports it.
-  return spawn(dockerBin(), ['sandbox', 'logs', '-f', name], { env });
+  return spawn(b.bin, b.prefix.concat(['logs', '-f', name]), { env });
 }
 
 function createTrayIcon() {
@@ -374,8 +409,10 @@ ipcMain.handle('list-sandboxes', async () => {
 
 ipcMain.handle('check-prereqs', async () => {
   const clomaCheck = await checkCloma();
-  const dockerCheck = await checkDocker();
-  return { cloma: clomaCheck, docker: dockerCheck };
+  const sandboxCheck = await checkSandboxCLI();
+  // The `docker` key is kept so the renderer's existing prerequisite row keeps
+  // working; it now reports the resolved sandbox CLI.
+  return { cloma: clomaCheck, docker: sandboxCheck };
 });
 
 ipcMain.handle('start-sandbox', async (event, name) => {
@@ -496,7 +533,8 @@ ipcMain.handle('stop-log-stream', async (event, name) => {
 
 app.whenReady().then(() => {
   debug('app ready — creating tray and window');
-  debug(`clomaBin=${clomaBin()} dockerBin=${dockerBin()}`);
+  const sb = sandboxBin();
+  debug(`clomaBin=${clomaBin()} sandboxBin=${sb.bin} sandboxPrefix=${sb.prefix.join(' ')}`);
   debug(`PATH=${augmentedEnv().PATH}`);
   createTray();
   createWindow();

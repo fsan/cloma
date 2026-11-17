@@ -16,11 +16,12 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "cloma",
-	Short: "Docker sandbox manager for isolated development",
-	Long: `cloma manages Docker sandboxes for running code agents in isolation.
+	Short: "Sandbox manager for isolated development",
+	Long: `cloma manages sandboxes for running code agents in isolation.
 
-It provides workspace management, sandbox lifecycle operations, and
-connectivity to Ollama running on the host machine.`,
+It drives the standalone sbx CLI when installed, falling back to the legacy
+docker sandbox plugin. It provides workspace management, sandbox lifecycle
+operations, and connectivity to Ollama running on the host machine.`,
 }
 
 func Execute() {

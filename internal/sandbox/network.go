@@ -5,18 +5,26 @@ import (
 	"os/exec"
 )
 
-// allowHost registers host with the Docker sandbox network proxy, adding it
-// to the sandbox's allow list. The verified form is "localhost:<port>" for
-// host ports; external domains are passed through as-is (see allowDomain in
-// policy.go for the fallback used when the proxy command does not accept
-// them).
+// allowHost grants the sandbox access to a host or domain.
+//
+// With the standalone sbx CLI this is a sandbox-scoped network policy rule:
+// `sbx policy allow network --sandbox <name> <resource>`, where the resource
+// may carry a port suffix ("host.docker.internal:11434"). The legacy
+// `docker sandbox` plugin instead configures its proxy directly with
+// `--allow-host`.
 func (c *SandboxClient) allowHost(sandboxName, host string) error {
-	cmd := exec.Command("docker", "sandbox", "network", "proxy", sandboxName,
-		"--allow-host", host)
+	backend := DetectBackend()
+
+	var cmd *exec.Cmd
+	if backend.IsSBX() {
+		cmd = backend.Command("policy", "allow", "network", "--sandbox", sandboxName, host)
+	} else {
+		cmd = backend.Command("network", "proxy", sandboxName, "--allow-host", host)
+	}
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to configure network proxy: %w, output: %s", err, string(output))
+		return fmt.Errorf("failed to configure network access: %w, output: %s", err, string(output))
 	}
 
 	return nil
@@ -24,8 +32,17 @@ func (c *SandboxClient) allowHost(sandboxName, host string) error {
 
 // allowHostPort allows the sandbox to reach the given port on the host,
 // reachable inside the sandbox as host.docker.internal:<port>.
+//
+// sbx policy rules match the hostname the connection names, which for cloma's
+// model backend is host.docker.internal. The legacy proxy translates the
+// sandbox-side host.docker.internal to localhost on the host, so it wants
+// "localhost:<port>".
 func (c *SandboxClient) allowHostPort(sandboxName string, port int) error {
-	return c.allowHost(sandboxName, fmt.Sprintf("localhost:%d", port))
+	host := "localhost"
+	if DetectBackend().IsSBX() {
+		host = "host.docker.internal"
+	}
+	return c.allowHost(sandboxName, fmt.Sprintf("%s:%d", host, port))
 }
 
 // ConfigureProxy configures network proxy to allow the sandbox to reach host ports.

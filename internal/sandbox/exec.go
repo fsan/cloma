@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 )
@@ -13,10 +12,10 @@ import (
 // It attaches stdin, stdout, and stderr to the current process.
 // Typically used for running agents interactively.
 func (c *SandboxClient) ExecInteractive(sandboxName, workspace string, cmd ...string) error {
-	args := []string{"sandbox", "exec", "-it", "-u", "agent", "-w", workspace, sandboxName}
+	args := []string{"exec", "-it", "-u", "agent", "-w", workspace, sandboxName}
 	args = append(args, cmd...)
 
-	dockerCmd := exec.Command("docker", args...)
+	dockerCmd := Command(args...)
 	dockerCmd.Stdin = os.Stdin
 	dockerCmd.Stdout = os.Stdout
 	dockerCmd.Stderr = os.Stderr
@@ -49,10 +48,10 @@ func (c *SandboxClient) ExecInteractive(sandboxName, workspace string, cmd ...st
 // Exec runs a non-interactive command in the sandbox and returns the output.
 // This is useful for running commands and capturing their output.
 func Exec(sandboxName string, cmd ...string) (string, error) {
-	args := []string{"sandbox", "exec", sandboxName}
+	args := []string{"exec", sandboxName}
 	args = append(args, cmd...)
 
-	dockerCmd := exec.Command("docker", args...)
+	dockerCmd := Command(args...)
 
 	var stdout, stderr bytes.Buffer
 	dockerCmd.Stdout = &stdout
@@ -68,10 +67,16 @@ func Exec(sandboxName string, cmd ...string) (string, error) {
 // ExecWithPrivilege runs a privileged command in the sandbox as root.
 // This is useful for provisioning operations.
 func ExecWithPrivilege(sandboxName string, cmd ...string) (string, error) {
-	args := []string{"sandbox", "exec", "--privileged", "-u", "root", sandboxName}
+	// sbx has no --privileged flag, so it only passes the root user there.
+	backend := DetectBackend()
+	args := []string{"exec"}
+	if !backend.IsSBX() {
+		args = append(args, "--privileged")
+	}
+	args = append(args, "-u", "root", sandboxName)
 	args = append(args, cmd...)
 
-	dockerCmd := exec.Command("docker", args...)
+	dockerCmd := backend.Command(args...)
 
 	var stdout, stderr bytes.Buffer
 	dockerCmd.Stdout = &stdout

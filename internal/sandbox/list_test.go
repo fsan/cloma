@@ -23,6 +23,11 @@ func TestParseSandboxList(t *testing.T) {
 			want:   []string{"cloma-c"},
 		},
 		{
+			name:   "bare array",
+			output: `[{"name":"cloma-d","state":"running"},{"name":"cloma-e","state":"stopped"}]`,
+			want:   []string{"cloma-d", "cloma-e"},
+		},
+		{
 			name: "daemon bootstrap banner before json",
 			output: `Starting sandboxd daemon...
 Daemon started (PID: 55276, socket: /tmp/docker_sandboxd.sock)

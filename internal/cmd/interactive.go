@@ -27,6 +27,7 @@ var agentChoices = []struct {
 	{sandbox.AgentOpenClaw, "OpenClaw"},
 	{sandbox.AgentJunie, "Junie CLI"},
 	{sandbox.AgentPi, "Pi coding agent"},
+	{sandbox.AgentDsh, "DeepSeek Harness"},
 }
 
 // interactiveStdin is the buffered reader shared by all prompts so answers

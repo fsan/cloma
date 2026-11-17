@@ -15,7 +15,7 @@ import (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all cloma-managed sandboxes",
-	Long: `List all Docker Desktop sandboxes managed by cloma.
+	Long: `List all sandboxes managed by cloma.
 
 Sandboxes managed by cloma have names starting with "cloma-".
 The list shows the sandbox name, status, and the recorded workspace path.`,

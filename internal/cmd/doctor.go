@@ -18,16 +18,15 @@ import (
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Run health checks on the system",
-	Long: `Run health checks to validate the Docker sandbox setup.
+	Long: `Run health checks to validate the sandbox setup.
 
 This command checks:
-  1. Docker installation
-  2. Docker Desktop sandbox plugin
-  3. Ollama connectivity
-  4. Model availability in Ollama
-  5. Workspace directory
-  6. Warm template availability
-  7. Sandbox status
+  1. Sandbox CLI (sbx, or the legacy docker sandbox plugin)
+  2. Ollama connectivity
+  3. Model availability in Ollama
+  4. Workspace directory
+  5. Warm template availability
+  6. Sandbox status
 
 Exit codes:
   0: All checks passed or only warnings
@@ -103,7 +102,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		// Text output mode
-		fmt.Println("=== Cloma Docker Doctor ===")
+		fmt.Println("=== Cloma Sandbox Doctor ===")
 		fmt.Println()
 		checks = runChecksText(model, ollamaURL, templateTag, resolvedWorkspace, sandboxName, &errors, &warnings)
 
@@ -132,21 +131,14 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 func runChecksJSON(model, ollamaURL, templateTag, resolvedWorkspace, sandboxName string, errors, warnings *int) []CheckResult {
 	var checks []CheckResult
 
-	// Check 1: Docker
-	check := checkDocker()
+	// Check 1: Sandbox CLI
+	check := checkSandboxCLI()
 	checks = append(checks, check)
 	if check.Status == "FAIL" {
 		*errors++
 	}
 
-	// Check 2: Sandbox plugin
-	check = checkSandboxPlugin()
-	checks = append(checks, check)
-	if check.Status == "FAIL" {
-		*errors++
-	}
-
-	// Check 3: Ollama
+	// Check 2: Ollama
 	check = checkOllama(ollamaURL)
 	checks = append(checks, check)
 	if check.Status == "FAIL" {
@@ -184,25 +176,16 @@ func runChecksJSON(model, ollamaURL, templateTag, resolvedWorkspace, sandboxName
 func runChecksText(model, ollamaURL, templateTag, resolvedWorkspace, sandboxName string, errors, warnings *int) []CheckResult {
 	var checks []CheckResult
 
-	// Check 1: Docker
-	fmt.Print("Checking Docker installation... ")
-	check := checkDocker()
+	// Check 1: Sandbox CLI
+	fmt.Print("Checking sandbox CLI... ")
+	check := checkSandboxCLI()
 	checks = append(checks, check)
 	printCheckResult(check, false)
 	if check.Status == "FAIL" {
 		*errors++
 	}
 
-	// Check 2: Sandbox plugin
-	fmt.Print("Checking Docker Desktop sandbox plugin... ")
-	check = checkSandboxPlugin()
-	checks = append(checks, check)
-	printCheckResult(check, false)
-	if check.Status == "FAIL" {
-		*errors++
-	}
-
-	// Check 3: Ollama
+	// Check 2: Ollama
 	fmt.Print("Checking Ollama connectivity... ")
 	check = checkOllama(ollamaURL)
 	checks = append(checks, check)
@@ -273,46 +256,31 @@ func printCheckResult(check CheckResult, showDetail bool) {
 	}
 }
 
-func checkDocker() CheckResult {
-	if _, err := exec.LookPath("docker"); err != nil {
+func checkSandboxCLI() CheckResult {
+	if err := sandbox.EnsureSandboxCLI(); err != nil {
 		return CheckResult{
-			Name:    "Docker",
+			Name:    "Sandbox CLI",
 			Status:  "FAIL",
-			Message: "Docker is not installed or not in PATH",
-			Hint:    "Install Docker Desktop from https://www.docker.com/products/docker-desktop",
+			Message: "Neither the sbx CLI nor the docker sandbox plugin is available",
+			Hint:    "Install Docker Sandboxes (sbx) from https://docs.docker.com/ai/sandboxes/",
 		}
 	}
 
-	// Get Docker version
-	output, err := exec.Command("docker", "--version").Output()
+	// Report the version of whichever backend cloma will drive.
+	backend := sandbox.DetectBackend()
+	output, err := backend.Command("version").Output()
 	if err != nil {
 		return CheckResult{
-			Name:    "Docker",
-			Status:  "FAIL",
-			Message: "Failed to get Docker version",
+			Name:    "Sandbox CLI",
+			Status:  "OK",
+			Message: sandbox.SandboxKind(),
 		}
 	}
 
 	return CheckResult{
-		Name:    "Docker",
+		Name:    "Sandbox CLI",
 		Status:  "OK",
 		Message: strings.TrimSpace(string(output)),
-	}
-}
-
-func checkSandboxPlugin() CheckResult {
-	if err := sandbox.EnsureSandboxPlugin(); err != nil {
-		return CheckResult{
-			Name:    "Sandbox Plugin",
-			Status:  "FAIL",
-			Message: "Docker Desktop sandbox plugin is required",
-			Hint:    "Requires Docker Desktop 4.58+. Enable sandbox plugin in Docker Desktop settings.",
-		}
-	}
-
-	return CheckResult{
-		Name:   "Sandbox Plugin",
-		Status: "OK",
 	}
 }
 
@@ -368,9 +336,24 @@ func checkWorkspace(workspace string) CheckResult {
 }
 
 func checkTemplate(templateTag string) CheckResult {
-	// Check if template image exists
-	cmd := exec.Command("docker", "image", "inspect", templateTag)
-	if cmd.Run() != nil {
+	// sbx keeps templates in its own store; the legacy plugin reuses Docker's
+	// image store.
+	exists := false
+	backend := sandbox.DetectBackend()
+	if backend.IsSBX() {
+		if output, err := backend.Command("template", "ls", "-q").Output(); err == nil {
+			for _, line := range strings.Split(string(output), "\n") {
+				if strings.TrimSpace(line) == templateTag {
+					exists = true
+					break
+				}
+			}
+		}
+	} else {
+		exists = exec.Command("docker", "image", "inspect", templateTag).Run() == nil
+	}
+
+	if !exists {
 		return CheckResult{
 			Name:    "Template",
 			Status:  "WARN",

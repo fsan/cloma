@@ -13,7 +13,7 @@ LDFLAGS := -ldflags "-X $(MODULE)/internal/cmd.Version=$(VERSION) -X $(MODULE)/i
 .PHONY: help build install uninstall clean test run doctor shell stop cloma build-app install-app clean-app
 
 help:
-	@echo "cloma - Docker Sandbox Manager for Code Agents"
+	@echo "cloma - Sandbox Manager for Code Agents"
 	@echo ""
 	@echo "Usage: make <target>"
 	@echo ""

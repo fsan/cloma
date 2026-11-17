@@ -1,10 +1,10 @@
-# Cloma - Docker Sandbox Manager
+# Cloma - Sandbox Manager
 
-A Go CLI for managing Docker Desktop sandboxes for running code agents in isolation, connecting to Ollama running on the host machine.
+A Go CLI for managing sandboxes for running code agents in isolation, connecting to Ollama running on the host machine.
 
 ## Overview
 
-This project creates a secure, isolated environment for code agents using Docker Desktop's sandbox (microVM) technology. Agents run inside the sandbox while connecting to Ollama on your host machine for inference.
+This project creates a secure, isolated environment for code agents using Docker Sandboxes (microVMs), driven by the standalone `sbx` CLI. On older Docker Desktop installs it falls back to the legacy `docker sandbox` plugin. Agents run inside the sandbox while connecting to Ollama on your host machine for inference.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -39,8 +39,10 @@ This project creates a secure, isolated environment for code agents using Docker
 
 ## Prerequisites
 
-1. **Docker Desktop 4.58+** with sandbox plugin enabled
-   - Enable sandbox plugin in Docker Desktop settings
+1. **Docker Sandboxes (`sbx`)** installed and on your `PATH`
+   - Install from https://docs.docker.com/ai/sandboxes/
+   - On older Docker Desktop installs (4.58+), the legacy `docker sandbox`
+     plugin is used as a fallback
 2. **Ollama** installed and running on host
    ```bash
    # Install Ollama (if not already installed)
@@ -143,7 +145,8 @@ make uninstall
 
 The build script downloads the official Electron release directly and assembles
 the `.app` bundle by hand — no `npm` or `node_modules` required. The app
-shells out to the `cloma` and `docker` CLIs, so both must be on your `PATH`.
+shells out to the `cloma` and `sbx` CLIs, so both must be on your `PATH`
+(the legacy `docker` CLI is used when `sbx` is not installed).
 
 ### Running from the menu bar
 
@@ -212,9 +215,10 @@ cloma -w ~/myproject -m glm-4.7-flash --flags '--verbose'
 By default `cloma run` launches **Claude Code** inside the sandbox. Pass
 `--agent grok` to launch **Grok Build** (`grok`), `--agent kimi` to launch
 **Kimi Code** (`kimi`), `--agent openclaw` to launch **OpenClaw** (`openclaw`),
-`--agent junie` to launch **Junie CLI** (`junie`), or `--agent pi` to launch
-the **Pi coding agent** (`pi`) instead. All agents are driven by the same
-Ollama instance running on your host.
+`--agent junie` to launch **Junie CLI** (`junie`), `--agent pi` to launch
+the **Pi coding agent** (`pi`), or `--agent dsh` to launch **DeepSeek Harness**
+(`dsh`) instead. All agents are driven by the same Ollama instance running on
+your host.
 
 ```bash
 # Launch Grok Build (default model)
@@ -246,6 +250,12 @@ cloma --agent pi
 
 # Launch Pi coding agent with a specific model and workspace
 cloma --agent pi -w ~/myproject -m glm-4.7-flash
+
+# Launch DeepSeek Harness (web UI forwarded to http://localhost:3080)
+cloma --agent dsh
+
+# Launch DeepSeek Harness with a specific model and workspace
+cloma --agent dsh -w ~/myproject -m glm-4.7-flash
 ```
 
 ### Interactive mode (`--interactive` / `-i`)
@@ -274,7 +284,8 @@ Code agent:
    1) Claude Code (default)
    ...
    6) Pi coding agent
-Select [1-6, default 1]:
+   7) DeepSeek Harness
+Select [1-7, default 1]:
 
 Optional settings (press Enter to accept the default):
 Instance name (empty = auto-derived from workspace):
@@ -320,13 +331,13 @@ defaults (e.g. `CLOMA_MODEL`) when needed.
 
 ### Network policy (`--network-policy` / `-N`)
 
-Sandbox network access to the host is default-deny: the Docker sandbox
-proxy blocks everything except the ports cloma registers at launch — by
-default only the Ollama port (reachable inside the sandbox as
-`host.docker.internal:<port>`). That's why `curl http://host.docker.internal:8881`
-from inside the sandbox fails with `blocked by network policy`, and why
-`sbx policy allow` from inside cannot help: host access can only be granted
-from the host side.
+Sandbox network access to the host is default-deny: everything is blocked
+except the ports cloma registers at launch — by default only the Ollama port
+(reachable inside the sandbox as `host.docker.internal:<port>`). That's why
+`curl http://host.docker.internal:8881` from inside the sandbox fails. Host
+access is granted from the host with a sandbox-scoped rule
+(`sbx policy allow network --sandbox <name> host.docker.internal:<port>`);
+running `sbx policy allow` from inside the sandbox does not help.
 
 Pass `--network-policy` (short `-N`) with a YAML file to declare additional
 host ports the sandbox may reach, plus external domains to allow or block:
@@ -358,19 +369,20 @@ Semantics:
   produces a loud warning, since the agent can no longer reach its model).
 - **Domains are default-allow** (the sandbox has direct internet egress),
   so `allow.domains` mostly matters on restricted setups, while
-  `block.domains` actively denies egress via the sandbox's `sbx policy` CLI.
+  `block.domains` actively denies egress with an sbx deny rule.
 - Block entries win: the same port or domain in both sections is rejected
   at load time as a likely mistake.
 - The file is validated before anything is created — typos (strict YAML
   keys), out-of-range ports, and host-style entries in `domains` (use
   `host_ports` for `localhost`/`host.docker.internal` targets) fail fast.
-- Entries that cannot be applied (e.g. the installed Docker sandbox CLI
-  does not support denying a domain) are reported as warnings at launch
-  instead of aborting.
+- Entries that cannot be applied (e.g. the installed sandbox CLI does not
+  support denying a domain) are reported as warnings at launch instead of
+  aborting.
 
-Domain allow/block support depends on the Docker Desktop version — the
-verified mechanism is host ports; domains fall back to `sbx policy allow`,
-then to a best-effort `sbx policy deny`/`block`, warning if neither works.
+Host ports and domains are both sandbox-scoped sbx network rules. On the
+legacy `docker sandbox` plugin, host ports go through the sandbox proxy while
+domain deny falls back to a best-effort in-sandbox `sbx policy` call, warning
+if neither mechanism works.
 
 When `--agent grok` is used, cloma writes a `~/.grok/config.toml` inside the
 sandbox pointing Grok Build at the host Ollama instance (OpenAI-compatible
@@ -523,6 +535,51 @@ Tune Pi from cloma with `--env` (each `KEY=VALUE`):
 cloma --agent pi -m glm-4.7-flash
 ```
 
+When `--agent dsh` is used, cloma installs **DeepSeek Harness**
+([github.com/deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness))
+— DeepSeek's "everything-is-a-plugin" agent harness — from npm
+(`npm install -g @deepseek-ai/dsh`) and writes its settings to
+`~/.dsh/settings.yaml` inside the sandbox. An OpenAI-compatible `ollama`
+provider is declared under `llm-pi-ai.providers` pointing at the local relay
+(which forwards to the host Ollama's `/v1` endpoint), and
+`agent-default-model` selects it by default. A dummy API key (referenced via
+`apiKeyEnv`) satisfies dsh's credential check; Ollama ignores it. dsh is a
+Node.js application (requires Node.js `^22.19 || >=24` and npm), so like the
+other Node agents it uses the shared local relay to bridge its Node fetch to
+the host Ollama through the non-tunneling proxy; Node.js 22 and `python3` are
+installed during provisioning.
+
+**dsh has no terminal UI.** Its only interactive surface is the web UI served
+by `dsh web` (default `http://127.0.0.1:3080`, loopback-only — dsh rejects
+binding `0.0.0.0`). Because `sbx port publish` requires a service bound to all
+interfaces, cloma instead forwards the port to your host over the **sandbox
+SSH integration** (`ssh -N -L`) and prints the URL (`http://localhost:3080`,
+or the next free port if 3080 is taken). This needs a one-time
+`sbx setup ssh` so `~/.ssh/config` has the managed `Host *.sbx` block; if the
+forward cannot be established, cloma warns and prints the manual command to
+run yourself. In the web UI, pick the workspace directory from the in-UI
+picker (`/home/agent`-style paths inside the sandbox; your mounted workspace
+is the path shown by cloma at launch).
+
+Tune dsh from cloma with `--env` (each `KEY=VALUE`):
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `OLLAMA_RELAY_PORT` | `18999` | Local relay port (`KIMI_RELAY_PORT` is honored as a legacy fallback) |
+| `OLLAMA_RELAY_UPSTREAM` | `http://host.docker.internal:11434` | Where the relay forwards to |
+| `DSH_WEB_PORT` | `3080` | Port the web UI listens on inside the sandbox; cloma forwards this same port, so change it only if you also forward manually |
+| `DSH_PERMISSION_MODE` | `danger-full-access` | dsh tool permission mode; the default lets the autonomous agent edit/run without approval prompts (the sandbox is disposable) |
+| `DSH_TELEMETRY_DISABLED` | `1` | dsh telemetry off so the agent makes no outbound calls beyond the relay |
+
+```bash
+# DeepSeek Harness against a specific Ollama model
+cloma --agent dsh -m glm-4.7-flash
+```
+
+> **Preview software.** DeepSeek Harness is a developer preview (currently
+> `0.1.x`/`0.2.0-rc.x`) and ships compatibility-breaking changes, so the
+> `settings.yaml` schema and CLI flags above may shift.
+
 #### Web search providers
 
 Web search is enabled by default with `OPENCLAW_WEB_SEARCH_PROVIDER=ollama`.
@@ -593,7 +650,7 @@ the env var, so it stays out of the on-disk config).
 | `--model` | `-m` | `glm-5:cloud` | AI model to use |
 | `--port` | `-p` | `11434` | Ollama port |
 | `--flags` | `-f` | (empty) | Additional agent flags |
-| `--agent` | | `claude` | Code agent: `claude` (Claude Code), `grok` (Grok Build), `kimi` (Kimi Code), `openclaw` (OpenClaw), `junie` (Junie CLI) or `pi` (Pi coding agent) |
+| `--agent` | | `claude` | Code agent: `claude` (Claude Code), `grok` (Grok Build), `kimi` (Kimi Code), `openclaw` (OpenClaw), `junie` (Junie CLI), `pi` (Pi coding agent) or `dsh` (DeepSeek Harness) |
 | `--name` | `-n` | (auto) | Name this cloma instance (overrides the workspace-derived sandbox name) |
 | `--env` | `-e` | (empty) | Environment variable to set in the sandbox (`KEY=VALUE`); repeatable |
 | `--interactive` | `-i` | off | Fill in options interactively: prompt for required parameters (workspace, port, model, agent), then optional ones |
@@ -736,10 +793,9 @@ cloma doctor
 cloma doctor --json
 
 # Example output:
-# === Cloma Docker Doctor ===
+# === Cloma Sandbox Doctor ===
 #
-# Checking Docker installation... OK
-# Checking Docker Desktop sandbox plugin... OK
+# Checking sandbox CLI... OK
 # Checking Ollama connectivity... OK
 # Checking model glm-5:cloud... OK
 # Checking workspace directory... OK
@@ -879,7 +935,7 @@ each agent's section:
 
 | Variable | Description |
 |----------|-------------|
-| `CLOMA_AGENT` | Code agent to run: `claude` (default), `grok`, `kimi`, `openclaw`, `junie` or `pi` |
+| `CLOMA_AGENT` | Code agent to run: `claude` (default), `grok`, `kimi`, `openclaw`, `junie`, `pi` or `dsh` |
 | `CLOMA_MODEL` | AI model to use (default: `glm-5:cloud`) |
 | `OLLAMA_PORT` | Host Ollama port (default: `11434`) |
 | `OLLAMA_URL` | Ollama base URL (default: `http://localhost:11434`) |
@@ -919,8 +975,14 @@ All state is stored in `~/.cloma/`:
 
 Warm templates pre-install dependencies for faster sandbox startup.
 
+Templates live in the sandbox runtime's own store. Create one from a
+provisioned sandbox with `sbx template save`, then list it with
+`sbx template ls`; cloma detects it with `sbx template ls -q` and passes it as
+`sbx create -t <tag>`. On the legacy `docker sandbox` plugin, templates come
+from Docker's image store instead:
+
 ```bash
-# Create warm template using Docker
+# Legacy plugin only: build a template image with Docker
 docker build -t cloma-sandbox-template:warm -f Dockerfile.template .
 ```
 
@@ -946,9 +1008,13 @@ ollama list
 ollama pull glm-5:cloud
 ```
 
-### Sandbox Plugin Not Available
+### Sandbox CLI Not Available
 
-Ensure Docker Desktop 4.58+ is installed and the sandbox plugin is enabled in settings.
+Ensure Docker Sandboxes (`sbx`) is installed and on your `PATH`; see
+https://docs.docker.com/ai/sandboxes/. On older Docker Desktop installs,
+`cloma` falls back to the `docker sandbox` plugin, which requires Docker
+Desktop 4.58+ with the sandbox plugin enabled in settings. Run
+`sbx diagnose` to check the installation.
 
 ### Connection Issues
 
@@ -966,7 +1032,7 @@ cloma/
 ├── cmd/cloma/main.go          # Entry point
 ├── internal/
 │   ├── cmd/                   # Cobra commands (run, clean, list, doctor, app, ...)
-│   ├── sandbox/               # Docker sandbox ops + embedded start-agent.sh
+│   ├── sandbox/               # sbx/docker sandbox ops + embedded start-agent.sh
 │   ├── workspace/             # Workspace resolution, naming, random, tmpfs
 │   ├── ollama/                # Ollama connectivity
 │   └── config/                # Configuration

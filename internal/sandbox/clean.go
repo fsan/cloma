@@ -3,7 +3,6 @@ package sandbox
 import (
 	"fmt"
 	"os"
-	"os/exec"
 
 	"github.com/fsan/cloma/internal/workspace"
 )
@@ -19,7 +18,15 @@ func Remove(sandboxName string) error {
 	// we can clean up a tmpfs mount if the sandbox used one.
 	stored, _ := GetStoredWorkspace(sandboxName)
 
-	cmd := exec.Command("docker", "sandbox", "rm", sandboxName)
+	// `sbx rm` prompts before removing unless --force is passed, and cloma
+	// removes sandboxes non-interactively.
+	backend := DetectBackend()
+	args := []string{"rm"}
+	if backend.IsSBX() {
+		args = append(args, "--force")
+	}
+	args = append(args, sandboxName)
+	cmd := backend.Command(args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to remove sandbox %s: %w, output: %s", sandboxName, err, string(output))

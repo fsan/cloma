@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 
 	"github.com/fsan/cloma/internal/config"
 	"github.com/fsan/cloma/internal/sandbox"
@@ -90,13 +89,9 @@ func runShell(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check prerequisites
-	if _, err := exec.LookPath("docker"); err != nil {
-		return fmt.Errorf("docker is not installed or not in PATH\nHint: Install Docker Desktop from https://www.docker.com/products/docker-desktop")
-	}
-
-	if err := sandbox.EnsureSandboxPlugin(); err != nil {
-		return fmt.Errorf("Docker Desktop sandbox plugin required\nHint: Requires Docker Desktop 4.58+\nEnable sandbox plugin in Docker Desktop settings")
+	// Check the sandbox CLI
+	if err := sandbox.EnsureSandboxCLI(); err != nil {
+		return fmt.Errorf("sandbox CLI required: %w\nHint: Install Docker Sandboxes (sbx) from https://docs.docker.com/ai/sandboxes/", err)
 	}
 
 	// Check if sandbox exists
@@ -119,11 +114,17 @@ func runShell(cmd *cobra.Command, args []string) error {
 		if verbose > 0 {
 			fmt.Printf("Starting sandbox: %s\n", sandboxName)
 		}
-		startCmd := exec.Command("docker", "sandbox", "start", sandboxName)
-		startCmd.Stdout = os.Stdout
-		startCmd.Stderr = os.Stderr
-		if err := startCmd.Run(); err != nil {
-			return fmt.Errorf("failed to start sandbox: %w", err)
+		// sbx has no `start` command: `exec` starts a stopped sandbox. The
+		// legacy plugin does expose `start`, so only call it there.
+		if backend := sandbox.DetectBackend(); backend.IsSBX() {
+			// exec below wakes the sandbox.
+		} else {
+			startCmd := backend.Command("start", sandboxName)
+			startCmd.Stdout = os.Stdout
+			startCmd.Stderr = os.Stderr
+			if err := startCmd.Run(); err != nil {
+				return fmt.Errorf("failed to start sandbox: %w", err)
+			}
 		}
 	}
 
@@ -136,7 +137,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 
 func execShell(sandboxName, workspacePath string) error {
 	args := []string{
-		"sandbox", "exec",
+		"exec",
 		"-u", "agent",
 		"-w", workspacePath,
 		"-it",
@@ -144,10 +145,10 @@ func execShell(sandboxName, workspacePath string) error {
 		"bash",
 	}
 
-	dockerCmd := exec.Command("docker", args...)
-	dockerCmd.Stdin = os.Stdin
-	dockerCmd.Stdout = os.Stdout
-	dockerCmd.Stderr = os.Stderr
+	sandboxCmd := sandbox.Command(args...)
+	sandboxCmd.Stdin = os.Stdin
+	sandboxCmd.Stdout = os.Stdout
+	sandboxCmd.Stderr = os.Stderr
 
-	return dockerCmd.Run()
+	return sandboxCmd.Run()
 }

@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/fsan/cloma/internal/config"
@@ -32,12 +31,12 @@ var (
 // runCmd represents the run command
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Run an agent in a Docker sandbox",
-	Long: `Run an agent in an isolated Docker sandbox.
+	Short: "Run an agent in a sandbox",
+	Long: `Run an agent in an isolated sandbox.
 
 This command will:
   1. Resolve the workspace path
-  2. Check prerequisites (Ollama, model, Docker sandbox plugin)
+  2. Check prerequisites (Ollama, model, sandbox CLI)
   3. Create the sandbox if needed
   4. Configure network proxy for host access
   5. Launch the agent interactively
@@ -70,7 +69,7 @@ func addRunFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&runModel, "model", "m", "", "AI model to use (default: glm-5:cloud)")
 	cmd.Flags().IntVarP(&runPort, "port", "p", 0, "Ollama port (default: 11434)")
 	cmd.Flags().StringVarP(&runFlags, "flags", "f", "", "Additional flags to pass to the agent")
-	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default), grok (Grok Build), kimi (Kimi Code), openclaw (OpenClaw), junie (Junie CLI) or pi (Pi coding agent)")
+	cmd.Flags().StringVar(&runAgent, "agent", "", "Code agent to run: claude (default), grok (Grok Build), kimi (Kimi Code), openclaw (OpenClaw), junie (Junie CLI), pi (Pi coding agent) or dsh (DeepSeek Harness)")
 	cmd.Flags().StringVarP(&runName, "name", "n", "", "Name this cloma instance (overrides the workspace-derived sandbox name, enabling multiple instances from the same folder)")
 	// --env can be repeated to inject multiple environment variables into the
 	// sandbox. Each value must be in KEY=VALUE form, e.g. --env 'DEBUG=1'.
@@ -122,7 +121,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// Resolve the code agent (claude by default, grok for Grok Build, kimi for
 	// Kimi Code, openclaw for OpenClaw, junie for Junie CLI, pi for the Pi
-	// coding agent).
+	// coding agent, dsh for DeepSeek Harness).
 	agent := runAgent
 	if agent == "" {
 		agent = config.GetAgent()
@@ -239,14 +238,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 		fmt.Println("Checking prerequisites...")
 	}
 
-	// Check Docker
-	if _, err := exec.LookPath("docker"); err != nil {
-		return fmt.Errorf("docker is not installed or not in PATH\nHint: Install Docker Desktop from https://www.docker.com/products/docker-desktop")
-	}
-
-	// Check sandbox plugin
-	if err := sandbox.EnsureSandboxPlugin(); err != nil {
-		return fmt.Errorf("Docker Desktop sandbox plugin required\nHint: Requires Docker Desktop 4.58+\nEnable sandbox plugin in Docker Desktop settings")
+	// Check the sandbox CLI (standalone sbx, or the legacy docker sandbox
+	// plugin on older Docker Desktop installs).
+	if err := sandbox.EnsureSandboxCLI(); err != nil {
+		return fmt.Errorf("sandbox CLI required: %w\nHint: Install Docker Sandboxes (sbx) from https://docs.docker.com/ai/sandboxes/", err)
 	}
 
 	// Create Ollama client and check availability
@@ -264,6 +259,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	sandboxClient := sandbox.NewClient(
 		sandbox.WithTemplateTag(config.GetTemplateTag()),
 		sandbox.WithAgent(agent),
+		sandbox.WithOllamaPort(ollamaPort),
 	)
 
 	// Ensure sandbox exists
@@ -344,6 +340,38 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// cloma-managed variables above (e.g. CLOMA_MODEL) if the user wants to.
 	envVars = append(envVars, runEnv...)
 
+	// DeepSeek Harness serves a browser UI bound to the sandbox loopback
+	// (127.0.0.1:3080); it refuses to bind 0.0.0.0, so it cannot be published
+	// with `sbx ports`, and the deprecated `docker sandbox` backend cloma uses
+	// has no port-forwarding at all. Reaching the UI from the host therefore
+	// needs a tunnel that must be set up deliberately. cloma does NOT touch
+	// host networking on the default path: the forward below runs only when
+	// CLOMA_DSH_WEB_FORWARD=1 is set, and even then it only opens an ssh -L
+	// tunnel (it never reconfigures host networking).
+	if agent == sandbox.AgentDsh {
+		if os.Getenv("CLOMA_DSH_WEB_FORWARD") == "1" {
+			// If the standalone sbx CLI is present, make sure the managed
+			// `Host *.sbx` block exists so sandbox names resolve as SSH hosts
+			// (requires sbx v0.37.0+); otherwise StartSSHForward explains what
+			// is missing.
+			if err := sandbox.SetupSandboxSSH(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			}
+			hostPort := sandbox.FreeLoopbackPort(sandbox.DefaultDshWebPort)
+			forward, err := sandbox.StartSSHForward(sandboxName, hostPort, sandbox.DefaultDshWebPort)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not forward the DeepSeek Harness web UI to the host: %v\n", err)
+			} else {
+				defer forward.Stop()
+				fmt.Printf("Web UI: http://localhost:%d (forwarded from the sandbox)\n\n", forward.HostPort)
+			}
+		} else {
+			fmt.Printf("DeepSeek Harness web UI is listening on 127.0.0.1:%d inside the sandbox.\n", sandbox.DefaultDshWebPort)
+			fmt.Printf("Reaching it from the host needs a manual tunnel (see the --agent dsh section of the README);\n")
+			fmt.Printf("set CLOMA_DSH_WEB_FORWARD=1 to let cloma try an ssh -L forward automatically.\n\n")
+		}
+	}
+
 	// Execute agent in sandbox
 	return launchAgent(sandboxName, resolvedWorkspace, envVars)
 }
@@ -372,7 +400,7 @@ func isValidEnvAssignment(s string) bool {
 
 func launchAgent(sandboxName, workspacePath string, envVars []string) error {
 	args := []string{
-		"sandbox", "exec",
+		"exec",
 		"-it",
 		"-u", "agent",
 		"-w", workspacePath,
@@ -384,10 +412,10 @@ func launchAgent(sandboxName, workspacePath string, envVars []string) error {
 
 	args = append(args, sandboxName, "/usr/local/bin/start-agent.sh")
 
-	dockerCmd := exec.Command("docker", args...)
-	dockerCmd.Stdin = os.Stdin
-	dockerCmd.Stdout = os.Stdout
-	dockerCmd.Stderr = os.Stderr
+	sandboxCmd := sandbox.Command(args...)
+	sandboxCmd.Stdin = os.Stdin
+	sandboxCmd.Stdout = os.Stdout
+	sandboxCmd.Stderr = os.Stderr
 
-	return dockerCmd.Run()
+	return sandboxCmd.Run()
 }

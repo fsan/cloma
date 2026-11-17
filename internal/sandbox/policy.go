@@ -15,14 +15,15 @@ import (
 // describes which host ports and external domains the sandbox may reach,
 // and which should be explicitly blocked.
 //
-// The sandbox network is default-deny: a host port is reachable only after
-// cloma registers it with the Docker sandbox proxy
-// (`docker sandbox network proxy <name> --allow-host localhost:<port>`).
+// Access is granted with a sandbox-scoped network rule. Under the standalone
+// sbx CLI that is `sbx policy allow network --sandbox <name> <resource>`;
+// under the legacy `docker sandbox` plugin it is
+// `docker sandbox network proxy <name> --allow-host <resource>`.
 // Blocking a host port therefore means "do not allow it" — in particular it
 // can be used to revoke cloma's automatic allow of the Ollama port. External
 // domains, in contrast, are reachable through the sandbox microVM's outbound
-// egress unless denied, so blocking them is an active operation performed
-// with the in-sandbox `sbx policy` CLI.
+// egress unless denied, so blocking them is an active operation (an sbx deny
+// rule, or the in-sandbox `sbx policy` CLI for the legacy backend).
 type NetworkPolicy struct {
 	// Allow lists what the sandbox may reach in addition to the default.
 	Allow *PolicyAllow `yaml:"allow" json:"allow,omitempty"`
@@ -289,25 +290,38 @@ func policyBlockOf(p *NetworkPolicy) *PolicyBlock {
 }
 
 // allowDomain grants the sandbox outbound access to an external domain.
-// Two mechanisms are tried in order because the Docker sandbox CLI's
-// support for domains (as opposed to host ports) varies by version:
-// first the host-side proxy registration used for host ports, then the
-// in-sandbox `sbx policy allow` CLI invoked from the host via exec.
+//
+// sbx models this as a sandbox-scoped network rule, the same mechanism used
+// for host ports, so allowHost handles it directly. The legacy plugin's proxy
+// command has weaker domain support, so the in-sandbox `sbx policy allow` CLI
+// is kept as a fallback for that backend only.
 func (c *SandboxClient) allowDomain(sandboxName, domain string) error {
 	if err := c.allowHost(sandboxName, domain); err == nil {
 		return nil
 	}
-	if _, err := Exec(sandboxName, "sbx", "policy", "allow", domain); err == nil {
-		return nil
+	if !DetectBackend().IsSBX() {
+		if _, err := Exec(sandboxName, "sbx", "policy", "allow", domain); err == nil {
+			return nil
+		}
 	}
-	return fmt.Errorf("neither `docker sandbox network proxy --allow-host` nor `sbx policy allow` succeeded")
+	return fmt.Errorf("failed to allow domain %s: no supported policy mechanism", domain)
 }
 
 // blockDomain denies the sandbox outbound access to an external domain.
-// Domains are reachable through the microVM's egress unless denied, and
-// the only handle on that policy is the in-sandbox `sbx policy` CLI, so
-// both plausible deny verbs are tried before giving up.
+//
+// sbx has a first-class sandbox-scoped deny rule. The legacy plugin has no
+// host-side equivalent, so it falls back to the in-sandbox `sbx policy` CLI
+// and tries both plausible verbs before giving up.
 func (c *SandboxClient) blockDomain(sandboxName, domain string) error {
+	backend := DetectBackend()
+	if backend.IsSBX() {
+		output, err := backend.Command("policy", "deny", "network", "--sandbox", sandboxName, domain).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("`sbx policy deny network %s` failed: %w, output: %s", domain, err, string(output))
+		}
+		return nil
+	}
+
 	for _, verb := range []string{"deny", "block"} {
 		if _, err := Exec(sandboxName, "sbx", "policy", verb, domain); err == nil {
 			return nil

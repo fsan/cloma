@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/fsan/cloma/internal/config"
@@ -83,13 +82,9 @@ func runClean(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check prerequisites
-	if _, err := exec.LookPath("docker"); err != nil {
-		return fmt.Errorf("docker is not installed or not in PATH\nHint: Install Docker Desktop from https://www.docker.com/products/docker-desktop")
-	}
-
-	if err := sandbox.EnsureSandboxPlugin(); err != nil {
-		return fmt.Errorf("Docker Desktop sandbox plugin required\nHint: Requires Docker Desktop 4.58+\nEnable sandbox plugin in Docker Desktop settings")
+	// Check the sandbox CLI
+	if err := sandbox.EnsureSandboxCLI(); err != nil {
+		return fmt.Errorf("sandbox CLI required: %w\nHint: Install Docker Sandboxes (sbx) from https://docs.docker.com/ai/sandboxes/", err)
 	}
 
 	// Check if sandbox exists

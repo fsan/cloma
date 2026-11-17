@@ -113,12 +113,12 @@ async function checkPrereqs() {
     }
     if (!dockerCheck.ok) {
       els.prereqDocker.querySelector('span:last-child').textContent =
-        `docker not found / not running (tried: ${dockerCheck.path})`;
+        `sandbox CLI not found (tried: ${dockerCheck.path})`;
       els.prereqDocker.querySelector('.dot').className = 'dot dot-warn';
       show = true;
     } else {
       els.prereqDocker.querySelector('span:last-child').textContent =
-        `docker available: ${dockerCheck.path}`;
+        `sandbox CLI available: ${dockerCheck.path}`;
       els.prereqDocker.querySelector('.dot').className = 'dot dot-ok';
     }
     if (show) {
