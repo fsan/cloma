@@ -1,9 +1,11 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +55,24 @@ func TestDetectBackendFallsBackToDocker(t *testing.T) {
 	want := []string{"sandbox", "ls", "--json"}
 	if got := backend.Args("ls", "--json"); !reflect.DeepEqual(got, want) {
 		t.Errorf("docker Args() = %v, want %v", got, want)
+	}
+}
+
+func TestCommandError(t *testing.T) {
+	base := errors.New("exit status 1")
+
+	err := CommandError("failed to list sandboxes", base, []byte("error: not signed in to Docker\n  try: sbx login\n"))
+	if !strings.Contains(err.Error(), "not signed in to Docker") || !strings.Contains(err.Error(), "login") {
+		t.Errorf("signed-out error should name the cause and the fix, got %q", err)
+	}
+
+	err = CommandError("failed to stop sandbox x", base, []byte("boom"))
+	if !errors.Is(err, base) || !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error should wrap the cause and include the output, got %q", err)
+	}
+
+	err = CommandError("failed", base, nil)
+	if !errors.Is(err, base) {
+		t.Errorf("empty output should still wrap the cause, got %q", err)
 	}
 }

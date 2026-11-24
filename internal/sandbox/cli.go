@@ -1,7 +1,9 @@
 package sandbox
 
 import (
+	"fmt"
 	"os/exec"
+	"strings"
 )
 
 // Backend identifies which sandbox command-line interface cloma drives.
@@ -49,4 +51,19 @@ func (b Backend) Command(args ...string) *exec.Cmd {
 // Command builds an *exec.Cmd against the auto-detected backend.
 func Command(args ...string) *exec.Cmd {
 	return DetectBackend().Command(args...)
+}
+
+// CommandError wraps a failed CLI invocation with the CLI's own output so the
+// user sees the real cause, such as "not signed in to Docker", instead of a
+// bare "exit status 1". If the output says the user is signed out, the error
+// adds the command that fixes it.
+func CommandError(action string, err error, output []byte) error {
+	msg := strings.TrimSpace(string(output))
+	if msg == "" {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	if strings.Contains(strings.ToLower(msg), "not signed in") {
+		return fmt.Errorf("%s: %s (run `%s login` and try again)", action, msg, DetectBackend().Binary)
+	}
+	return fmt.Errorf("%s: %w: %s", action, err, msg)
 }

@@ -317,7 +317,7 @@ func (c *SandboxClient) blockDomain(sandboxName, domain string) error {
 	if backend.IsSBX() {
 		output, err := backend.Command("policy", "deny", "network", "--sandbox", sandboxName, domain).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("`sbx policy deny network %s` failed: %w, output: %s", domain, err, string(output))
+			return CommandError(fmt.Sprintf("`sbx policy deny network %s` failed", domain), err, output)
 		}
 		return nil
 	}

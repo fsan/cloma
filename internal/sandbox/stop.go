@@ -1,16 +1,12 @@
 package sandbox
 
-import (
-	"fmt"
-)
-
 // Stop stops a running sandbox.
 // A stopped sandbox can be restarted later with exec commands.
 func Stop(sandboxName string) error {
 	cmd := Command("stop", sandboxName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to stop sandbox %s: %w, output: %s", sandboxName, err, string(output))
+		return CommandError("failed to stop sandbox "+sandboxName, err, output)
 	}
 	return nil
 }

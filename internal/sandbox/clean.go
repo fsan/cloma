@@ -29,7 +29,7 @@ func Remove(sandboxName string) error {
 	cmd := backend.Command(args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to remove sandbox %s: %w, output: %s", sandboxName, err, string(output))
+		return CommandError("failed to remove sandbox "+sandboxName, err, output)
 	}
 	// Clean up the workspace registry entry so a later create does not
 	// think the sandbox still exists with the old workspace.

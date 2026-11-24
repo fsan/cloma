@@ -97,9 +97,11 @@ func parseSandboxList(output []byte) ([]Sandbox, error) {
 // List returns all sandboxes managed by the installed CLI.
 func List() ([]Sandbox, error) {
 	cmd := Command("ls", "--json")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list sandboxes: %w", err)
+		return nil, CommandError("failed to list sandboxes", err, stderr.Bytes())
 	}
 
 	return parseSandboxList(output)

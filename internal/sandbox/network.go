@@ -24,7 +24,7 @@ func (c *SandboxClient) allowHost(sandboxName, host string) error {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to configure network access: %w, output: %s", err, string(output))
+		return CommandError("failed to configure network access", err, output)
 	}
 
 	return nil

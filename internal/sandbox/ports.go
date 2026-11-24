@@ -58,7 +58,7 @@ func SetupSandboxSSH() error {
 		if strings.Contains(string(output), "unknown command") {
 			return ErrSandboxSSHUnsupported
 		}
-		return fmt.Errorf("`sbx setup ssh` failed: %w", err)
+		return CommandError("`sbx setup ssh` failed", err, output)
 	}
 	return nil
 }
